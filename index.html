@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>CSV Academy — Computer System Validation Learning Tool</title>
+  <meta name="description" content="Interactive learning tool for Computer System Validation (CSV) based on ISPE GAMP 5 (2nd edition), EU Annex 11, and 21 CFR Part 11." />
+  <link rel="stylesheet" href="assets/css/styles.css" />
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+
+  <header class="topbar">
+    <div class="topbar-inner">
+      <div class="brand">
+        <div class="brand-mark" aria-hidden="true">CSV</div>
+        <div class="brand-text">
+          <div class="brand-title">CSV Academy</div>
+          <div class="brand-sub">GAMP 5 (2nd ed.) &middot; EU Annex 11 &middot; 21 CFR Part 11</div>
+        </div>
+      </div>
+      <nav class="topnav" aria-label="Primary">
+        <button class="nav-btn" data-route="home">Home</button>
+        <button class="nav-btn" data-route="gamp5">GAMP 5</button>
+        <button class="nav-btn" data-route="annex11">Annex 11</button>
+        <button class="nav-btn" data-route="part11">Part 11</button>
+        <button class="nav-btn" data-route="compare">Compare</button>
+        <button class="nav-btn" data-route="quiz">Quizzes</button>
+        <button class="nav-btn" data-route="glossary">Glossary</button>
+      </nav>
+    </div>
+  </header>
+
+  <div class="layout">
+    <aside class="sidebar" id="sidebar" aria-label="Module navigation"></aside>
+
+    <main id="main" class="main"></main>
+  </div>
+
+  <footer class="footer">
+    <div class="footer-inner">
+      <span>CSV Academy &mdash; an educational reference tool. Not a substitute for the official ISPE GAMP&reg; 5 Guide, EudraLex Volume 4 Annex 11, or 21 CFR Part 11.</span>
+      <span class="footer-progress" id="progressBadge">Progress: 0%</span>
+    </div>
+  </footer>
+
+  <script src="assets/js/data/modules.js"></script>
+  <script src="assets/js/data/annex11.js"></script>
+  <script src="assets/js/data/part11.js"></script>
+  <script src="assets/js/data/comparison.js"></script>
+  <script src="assets/js/data/quizzes.js"></script>
+  <script src="assets/js/data/glossary.js"></script>
+  <script src="assets/js/app.js"></script>
+</body>
+</html>
