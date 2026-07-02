@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Europe ISPE &amp; Pharma Weekly Digest — {{ week_of }}</title>
+<style>
+  :root {
+    color-scheme: light;
+    --ink: #1c1f26;
+    --muted: #5b6472;
+    --border: #e4e7ec;
+    --accent: #1f6feb;
+    --bg: #ffffff;
+    --panel: #f7f8fa;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    color: var(--ink);
+    background: var(--bg);
+    line-height: 1.5;
+  }
+  .wrap { max-width: 860px; margin: 0 auto; padding: 2.5rem 1.5rem 4rem; }
+  header { border-bottom: 1px solid var(--border); padding-bottom: 1.25rem; margin-bottom: 2rem; }
+  header h1 { font-size: 1.5rem; margin: 0 0 0.35rem; }
+  header p { color: var(--muted); margin: 0; font-size: 0.9rem; }
+  section { margin-bottom: 2.5rem; }
+  section h2 {
+    font-size: 1.05rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--accent);
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 0.5rem;
+    margin-bottom: 1.25rem;
+  }
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 1rem 1.15rem;
+    margin-bottom: 0.85rem;
+  }
+  .card .meta {
+    font-size: 0.8rem;
+    color: var(--muted);
+    margin-bottom: 0.3rem;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+  }
+  .card .tag {
+    display: inline-block;
+    background: #eaf1ff;
+    color: var(--accent);
+    border-radius: 999px;
+    padding: 0.05rem 0.6rem;
+    font-weight: 600;
+  }
+  .card h3 { margin: 0.15rem 0 0.35rem; font-size: 1rem; }
+  .card p { margin: 0 0 0.4rem; color: #333; }
+  .card a { color: var(--accent); font-size: 0.85rem; text-decoration: none; word-break: break-all; }
+  .card a:hover { text-decoration: underline; }
+  .empty { color: var(--muted); font-style: italic; }
+  footer { color: var(--muted); font-size: 0.8rem; margin-top: 3rem; border-top: 1px solid var(--border); padding-top: 1rem; }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <h1>Europe ISPE &amp; Pharma / Life Sciences Weekly Digest</h1>
+      <p>Week of {{ week_of }} &middot; generated {{ generated_at }}</p>
+    </header>
+
+    <section>
+      <h2>ISPE Regional Chapter Events</h2>
+      {% if ispe_events %}
+        {% for e in ispe_events %}
+        <div class="card">
+          <div class="meta"><span class="tag">{{ e.chapter }}</span><span>{{ e.date }}</span>{% if e.location %}<span>{{ e.location }}</span>{% endif %}</div>
+          <h3>{{ e.title }}</h3>
+          <p>{{ e.summary }}</p>
+          {% if e.url %}<a href="{{ e.url }}" target="_blank" rel="noopener">{{ e.url }}</a>{% endif %}
+        </div>
+        {% endfor %}
+      {% else %}
+        <p class="empty">No qualifying chapter events found this week.</p>
+      {% endif %}
+    </section>
+
+    <section>
+      <h2>Pharma &amp; Life Sciences News</h2>
+      {% if pharma_news %}
+        {% for n in pharma_news %}
+        <div class="card">
+          <div class="meta"><span class="tag">{{ n.source }}</span><span>{{ n.date }}</span></div>
+          <h3>{{ n.headline }}</h3>
+          <p>{{ n.summary }}</p>
+          {% if n.url %}<a href="{{ n.url }}" target="_blank" rel="noopener">{{ n.url }}</a>{% endif %}
+        </div>
+        {% endfor %}
+      {% else %}
+        <p class="empty">No qualifying news items found this week.</p>
+      {% endif %}
+    </section>
+
+    <footer>Generated automatically from ISPE chapter pages and public pharma news sources. Verify details before relying on them for planning.</footer>
+  </div>
+</body>
+</html>

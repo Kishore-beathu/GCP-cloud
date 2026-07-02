@@ -1,0 +1,31 @@
+{
+  "week_of": "2026-07-06",
+  "generated_at": "2026-07-02T08:00:00+00:00",
+  "ispe_events": [
+    {
+      "chapter": "ISPE DACH",
+      "title": "Annual Pharma Manufacturing Conference",
+      "date": "2026-07-10",
+      "location": "Frankfurt, Germany",
+      "url": "https://ispe-dach.example/events/annual-2026",
+      "summary": "Two-day conference on GMP manufacturing trends and facility design."
+    },
+    {
+      "chapter": "ISPE France",
+      "title": "Journee Qualite et Conformite",
+      "date": "2026-07-12",
+      "location": "Lyon, France",
+      "url": "https://ispe-france.example/journee-qualite",
+      "summary": "One-day workshop on quality systems and regulatory compliance."
+    }
+  ],
+  "pharma_news": [
+    {
+      "headline": "EMA issues updated guidance on continuous manufacturing",
+      "source": "European Pharmaceutical Review",
+      "date": "2026-06-28",
+      "url": "https://epr.example/ema-continuous-manufacturing",
+      "summary": "The EMA published revised guidance clarifying validation expectations for continuous manufacturing lines."
+    }
+  ]
+}
