@@ -545,3 +545,8 @@ code {
 
 .signin-card h1 { font-size: 17px; margin: 0; }
 .signin-card p { margin: 0; font-size: 13px; }
+
+/* Region selector sits with the watchlist search. */
+.watchlist select.search {
+  width: calc(100% - 20px);
+}

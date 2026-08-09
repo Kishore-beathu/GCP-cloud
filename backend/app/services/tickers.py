@@ -16,6 +16,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Stock
+from app.services import markets
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +81,53 @@ SEED_TICKERS: tuple[TickerSeed, ...] = (
     TickerSeed("VEEV", "Veeva Systems Inc.", "health_it", "NYSE"),
     TickerSeed("DXCM", "DexCom Inc.", "medtech", "NASDAQ"),
     TickerSeed("ISRG", "Intuitive Surgical", "medtech", "NASDAQ"),
+    # --- Europe: primary listings, not the US depositary receipts -----------
+    # ADRs (AZN, NVS, NVO above) trade US hours in USD; the home lines below
+    # carry the local session, local currency and the domestic news flow.
+    TickerSeed("AZN.L", "AstraZeneca PLC", "pharma"),
+    TickerSeed("GSK.L", "GSK plc", "pharma"),
+    TickerSeed("HLN.L", "Haleon plc", "consumer_health"),
+    TickerSeed("NOVN.SW", "Novartis AG", "pharma"),
+    TickerSeed("ROG.SW", "Roche Holding AG", "pharma"),
+    TickerSeed("LONN.SW", "Lonza Group AG", "cdmo"),
+    TickerSeed("NOVO-B.CO", "Novo Nordisk A/S", "pharma"),
+    TickerSeed("GMAB.CO", "Genmab A/S", "biotech"),
+    TickerSeed("SAN.PA", "Sanofi SA", "pharma"),
+    TickerSeed("EL.PA", "EssilorLuxottica SA", "medtech"),
+    TickerSeed("BAYN.DE", "Bayer AG", "pharma"),
+    TickerSeed("MRK.DE", "Merck KGaA", "pharma"),
+    TickerSeed("SHL.DE", "Siemens Healthineers AG", "medtech"),
+    TickerSeed("SRT3.DE", "Sartorius AG", "life_science_tools"),
+    TickerSeed("QIA.DE", "QIAGEN N.V.", "life_science_tools"),
+    TickerSeed("ARGX.BR", "argenx SE", "biotech"),
+    TickerSeed("UCB.BR", "UCB SA", "pharma"),
+    TickerSeed("GALP.AS", "Galapagos NV", "biotech"),
+    TickerSeed("RECI.MI", "Recordati S.p.A.", "pharma"),
+    TickerSeed("GRF.MC", "Grifols SA", "biotech"),
+    TickerSeed("ORNBV.HE", "Orion Oyj", "pharma"),
+    TickerSeed("SOBI.ST", "Swedish Orphan Biovitrum AB", "biotech"),
+    # --- Asia-Pacific -------------------------------------------------------
+    TickerSeed("4502.T", "Takeda Pharmaceutical Co.", "pharma"),
+    TickerSeed("4503.T", "Astellas Pharma Inc.", "pharma"),
+    TickerSeed("4568.T", "Daiichi Sankyo Co.", "pharma"),
+    TickerSeed("4523.T", "Eisai Co.", "pharma"),
+    TickerSeed("4519.T", "Chugai Pharmaceutical Co.", "pharma"),
+    TickerSeed("4901.T", "FUJIFILM Holdings", "cdmo"),
+    TickerSeed("1093.HK", "CSPC Pharmaceutical Group", "pharma"),
+    TickerSeed("1177.HK", "Sino Biopharmaceutical", "pharma"),
+    TickerSeed("2269.HK", "WuXi Biologics", "cdmo"),
+    TickerSeed("6160.HK", "BeiGene Ltd.", "biotech"),
+    TickerSeed("603259.SS", "WuXi AppTec Co.", "cro"),
+    TickerSeed("600276.SS", "Jiangsu Hengrui Pharmaceuticals", "pharma"),
+    TickerSeed("207940.KS", "Samsung Biologics", "cdmo"),
+    TickerSeed("068270.KS", "Celltrion Inc.", "biotech"),
+    TickerSeed("SUNPHARMA.NS", "Sun Pharmaceutical Industries", "pharma"),
+    TickerSeed("DRREDDY.NS", "Dr. Reddy's Laboratories", "pharma"),
+    TickerSeed("CIPLA.NS", "Cipla Ltd.", "pharma"),
+    TickerSeed("CSL.AX", "CSL Limited", "biotech"),
+    # --- North America beyond the US ---------------------------------------
+    TickerSeed("BHC.TO", "Bausch Health Companies", "pharma"),
+    TickerSeed("CXR.TO", "Cardiol Therapeutics", "biotech"),
 )
 
 
@@ -117,12 +165,19 @@ async def seed_stocks(db: AsyncSession) -> int:
     for seed in seeds:
         if seed.ticker in existing:
             continue
+        market = markets.resolve(seed.ticker)
         db.add(
             Stock(
                 ticker=seed.ticker,
                 company_name=seed.company_name,
                 sector=seed.sector,
-                exchange=seed.exchange,
+                # An explicit exchange in the CSV wins; otherwise the symbol
+                # suffix names the venue.
+                exchange=seed.exchange or market.name,
+                mic=market.mic,
+                region=market.region,
+                country=market.country,
+                currency=market.currency,
             )
         )
         added += 1

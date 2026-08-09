@@ -2,6 +2,13 @@ import type { Stock } from '../api/types'
 import type { LivePrice } from '../hooks/useTickerSocket'
 import { ChangeText } from './badges'
 
+const REGIONS = [
+  { value: '', label: 'All regions' },
+  { value: 'north_america', label: 'North America' },
+  { value: 'europe', label: 'Europe' },
+  { value: 'asia_pacific', label: 'Asia-Pacific' },
+]
+
 interface Props {
   stocks: Stock[]
   selected: string | null
@@ -9,9 +16,20 @@ interface Props {
   onSelect: (ticker: string) => void
   filter: string
   onFilter: (value: string) => void
+  region: string
+  onRegion: (value: string) => void
 }
 
-export function Watchlist({ stocks, selected, prices, onSelect, filter, onFilter }: Props) {
+export function Watchlist({
+  stocks,
+  selected,
+  prices,
+  onSelect,
+  filter,
+  onFilter,
+  region,
+  onRegion,
+}: Props) {
   const query = filter.trim().toUpperCase()
   const visible = query
     ? stocks.filter(
@@ -29,6 +47,18 @@ export function Watchlist({ stocks, selected, prices, onSelect, filter, onFilter
         onChange={(event) => onFilter(event.target.value)}
         aria-label="Search tickers"
       />
+      <select
+        className="search"
+        value={region}
+        onChange={(event) => onRegion(event.target.value)}
+        aria-label="Filter by region"
+      >
+        {REGIONS.map((option) => (
+          <option key={option.value} value={option.value}>
+            {option.label}
+          </option>
+        ))}
+      </select>
       <ul>
         {visible.map((stock) => {
           const live = prices[stock.ticker]
@@ -39,7 +69,7 @@ export function Watchlist({ stocks, selected, prices, onSelect, filter, onFilter
                 onClick={() => onSelect(stock.ticker)}
               >
                 <span className="ticker">{stock.ticker}</span>
-                <span className="name" title={stock.company_name}>
+                <span className="name" title={`${stock.company_name} · ${stock.exchange ?? ''}`}>
                   {stock.company_name}
                 </span>
                 <span className="price">

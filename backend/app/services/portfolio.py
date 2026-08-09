@@ -63,6 +63,14 @@ class Valuation:
     starting_cash: float
     realised_pnl: float
     unrealised_pnl: float
+    # Market value per quote currency. Nothing is FX-converted, so this is the
+    # only trustworthy view once a portfolio spans regions.
+    positions_by_currency: dict[str, float] = field(default_factory=dict)
+
+    @property
+    def mixed_currency(self) -> bool:
+        """True when the single total sums across currencies and is meaningless."""
+        return len(self.positions_by_currency) > 1
 
     @property
     def total_return_pct(self) -> float | None:
@@ -81,6 +89,8 @@ class Valuation:
             "total_return_pct": (
                 round(self.total_return_pct, 2) if self.total_return_pct is not None else None
             ),
+            "positions_by_currency": self.positions_by_currency,
+            "mixed_currency": self.mixed_currency,
         }
 
 
@@ -156,19 +166,40 @@ async def latest_prices(db: AsyncSession, tickers: list[str]) -> dict[str, float
     return prices
 
 
+async def _currencies_for(db: AsyncSession, tickers: list[str]) -> dict[str, str]:
+    """Quote currency per ticker, so a multi-region portfolio can be honest."""
+    if not tickers:
+        return {}
+    rows = (
+        await db.execute(
+            select(Stock.ticker, Stock.currency).where(Stock.ticker.in_(tickers))
+        )
+    ).all()
+    return {ticker: (currency or "USD") for ticker, currency in rows}
+
+
 async def value_portfolio(db: AsyncSession, portfolio: Portfolio) -> tuple[Valuation, list[dict]]:
     """Value a portfolio at the latest known prices.
 
     Holdings with no price history are valued at cost rather than dropped, so
     the total stays meaningful before prices are backfilled.
+
+    **Totals are not FX-converted.** With a multi-region universe a portfolio
+    can hold JPY, EUR and USD lines at once, and adding those numbers together
+    produces a figure that means nothing. The per-currency breakdown on the
+    valuation is the honest view; ``mixed_currency`` flags when the single
+    total should not be trusted. Converting properly needs an FX rate source,
+    which this platform does not have yet.
     """
     positions = await get_positions(db, portfolio.id)
     open_positions = {t: p for t, p in positions.items() if p.quantity > 0}
     prices = await latest_prices(db, list(open_positions))
+    currencies = await _currencies_for(db, list(open_positions))
 
     positions_value = 0.0
     unrealised = 0.0
     rows: list[dict] = []
+    by_currency: dict[str, float] = {}
 
     for ticker, position in sorted(open_positions.items()):
         price = prices.get(ticker)
@@ -178,6 +209,8 @@ async def value_portfolio(db: AsyncSession, portfolio: Portfolio) -> tuple[Valua
         )
         positions_value += market_value
         unrealised += position_unrealised
+        currency = currencies.get(ticker, "USD")
+        by_currency[currency] = round(by_currency.get(currency, 0.0) + market_value, 2)
         rows.append(
             {
                 "ticker": ticker,
@@ -187,6 +220,7 @@ async def value_portfolio(db: AsyncSession, portfolio: Portfolio) -> tuple[Valua
                 "market_value": round(market_value, 2),
                 "unrealised_pnl": round(position_unrealised, 2),
                 "priced": price is not None,
+                "currency": currency,
             }
         )
 
@@ -198,6 +232,7 @@ async def value_portfolio(db: AsyncSession, portfolio: Portfolio) -> tuple[Valua
         starting_cash=portfolio.starting_cash,
         realised_pnl=realised,
         unrealised_pnl=unrealised,
+        positions_by_currency=by_currency,
     )
     return valuation, rows
 

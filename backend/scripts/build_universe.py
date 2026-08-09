@@ -1,15 +1,24 @@
-"""Build data/tickers.csv from Finnhub's US symbol directory.
+"""Build data/tickers.csv from Finnhub's symbol directories.
 
 The app tracks whatever ``backend/data/tickers.csv`` contains (falling back to
 the built-in ~45-symbol seed list). This script grows that file toward the
-full pharma/life-sciences/AI universe using a single Finnhub API call, filtered
-by keywords against each security's description.
+full pharma/life-sciences/AI universe across Europe, North America and Asia,
+filtered by keywords against each security's description.
+
+The venue suffix is part of the symbol everywhere except the US (AZN.L,
+NOVO-B.CO, 7203.T, SHOP.TO), and it is what resolves a listing's exchange,
+region, country and currency.
 
 Usage::
 
-    FINNHUB_API_KEY=... python scripts/build_universe.py                # default keywords
-    FINNHUB_API_KEY=... python scripts/build_universe.py --keywords pharma,bio,genomics
-    FINNHUB_API_KEY=... python scripts/build_universe.py --limit 1000 --dry-run
+    # US only (the default)
+    FINNHUB_API_KEY=... python scripts/build_universe.py
+
+    # Europe, North America and Asia in one pass
+    FINNHUB_API_KEY=... python scripts/build_universe.py \
+        --exchange US,L,PA,AS,DE,SW,CO,ST,MI,MC,BR,HE,OL,TO,T,HK,SS,KS,NS,AX,SI,TW
+
+    FINNHUB_API_KEY=... python scripts/build_universe.py --region europe --dry-run
 
 Review the output before committing it — keyword matching casts a wide net on
 purpose, and it is easier to delete rows than to notice missing ones.
@@ -24,6 +33,9 @@ import sys
 from pathlib import Path
 
 import httpx
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from app.services import markets  # noqa: E402  (after sys.path fix)
 
 SYMBOLS_URL = "https://finnhub.io/api/v1/stock/symbol"
 OUTPUT = Path(__file__).resolve().parents[1] / "data" / "tickers.csv"
@@ -59,7 +71,17 @@ def matches(description: str, keywords: tuple[str, ...]) -> bool:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--exchange", default="US")
+    parser.add_argument(
+        "--exchange",
+        default="US",
+        help="Comma-separated Finnhub exchange codes, e.g. US,L,PA,DE,T,HK",
+    )
+    parser.add_argument(
+        "--region",
+        action="append",
+        choices=["north_america", "europe", "asia_pacific"],
+        help="Keep only these regions; repeatable. Default: keep everything.",
+    )
     parser.add_argument(
         "--keywords",
         default=",".join(DEFAULT_KEYWORDS),
@@ -74,8 +96,14 @@ def main() -> None:
         raise SystemExit("Set FINNHUB_API_KEY in the environment first")
 
     keywords = tuple(k.strip().lower() for k in args.keywords.split(",") if k.strip())
-    symbols = fetch_symbols(api_key, args.exchange)
-    print(f"Fetched {len(symbols)} symbols from Finnhub ({args.exchange})", file=sys.stderr)
+    wanted_regions = set(args.region or ())
+
+    exchanges = [code.strip() for code in args.exchange.split(",") if code.strip()]
+    symbols: list[dict] = []
+    for code in exchanges:
+        fetched = fetch_symbols(api_key, code)
+        print(f"Fetched {len(fetched)} symbols from Finnhub ({code})", file=sys.stderr)
+        symbols.extend(fetched)
 
     rows: list[dict[str, str]] = []
     for item in symbols:
@@ -83,21 +111,35 @@ def main() -> None:
             continue
         ticker = str(item.get("symbol") or "").strip().upper()
         description = str(item.get("description") or "").strip()
-        if not ticker or "." in ticker or not matches(description, keywords):
+        if not ticker or not matches(description, keywords):
             continue
+
+        # The venue suffix IS the symbol on every market except the US, so it
+        # must survive: AZN.L, NOVO-B.CO, 7203.T, SHOP.TO.
+        market = markets.resolve(ticker)
+        if wanted_regions and market.region not in wanted_regions:
+            continue
+
         rows.append(
             {
                 "ticker": ticker,
                 "company_name": description.title(),
                 "sector": "life_sciences",
-                "exchange": str(item.get("mic") or args.exchange),
+                "exchange": market.name,
+                "mic": market.mic,
+                "region": market.region,
+                "country": market.country,
+                "currency": market.currency,
             }
         )
         if len(rows) >= args.limit:
             break
 
-    rows.sort(key=lambda row: row["ticker"])
-    print(f"Matched {len(rows)} tickers", file=sys.stderr)
+    rows.sort(key=lambda row: (row["region"], row["ticker"]))
+    by_region: dict[str, int] = {}
+    for row in rows:
+        by_region[row["region"]] = by_region.get(row["region"], 0) + 1
+    print(f"Matched {len(rows)} tickers: {by_region}", file=sys.stderr)
 
     if args.dry_run:
         for row in rows[:50]:
@@ -109,7 +151,11 @@ def main() -> None:
     OUTPUT.parent.mkdir(parents=True, exist_ok=True)
     with OUTPUT.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(
-            handle, fieldnames=["ticker", "company_name", "sector", "exchange"]
+            handle,
+            fieldnames=[
+                "ticker", "company_name", "sector", "exchange",
+                "mic", "region", "country", "currency",
+            ],
         )
         writer.writeheader()
         writer.writerows(rows)

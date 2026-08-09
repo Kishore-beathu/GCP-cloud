@@ -38,7 +38,8 @@ export default function App() {
 }
 
 function Dashboard({ onSignOut }: { onSignOut: () => void }) {
-  const stocks = useAsync(getStocks, [])
+  const [region, setRegion] = useState('')
+  const stocks = useAsync(() => getStocks({ region: region || undefined }), [region])
   const [selected, setSelected] = useState<string | null>(null)
   const [filter, setFilter] = useState('')
 
@@ -94,6 +95,8 @@ function Dashboard({ onSignOut }: { onSignOut: () => void }) {
           onSelect={setSelected}
           filter={filter}
           onFilter={setFilter}
+          region={region}
+          onRegion={setRegion}
         />
 
         <main>

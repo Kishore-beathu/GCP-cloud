@@ -13,7 +13,7 @@ and backtests how news historically moved prices.
 | [`backend/`](backend/) | FastAPI + PostgreSQL backend: ingestion, sentiment, alerts, WebSocket streaming, backtesting. **Start here** — see [`backend/README.md`](backend/README.md). |
 | [`frontend/`](frontend/) | React + TypeScript dashboard: live watchlist, ticker tape, news feed, chart, alerts, backtest view. See [`frontend/README.md`](frontend/README.md). |
 | [`desktop/`](desktop/) | Electron shell that packages the dashboard as a Windows desktop app. |
-| [`docs/`](docs/) | Deployment guide for Cloud Run + Cloud SQL. |
+| [`docs/`](docs/) | [Deployment guide](docs/DEPLOYMENT.md) for Cloud Run + Cloud SQL, and an honest [comparison](docs/COMPARISON.md) with commercial platforms. |
 
 ## Build phases
 

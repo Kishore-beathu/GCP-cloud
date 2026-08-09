@@ -60,6 +60,8 @@ async def _detail(db: AsyncSession, portfolio: Portfolio) -> PortfolioDetail:
             if valuation.total_return_pct is not None
             else None
         ),
+        positions_by_currency=valuation.positions_by_currency,
+        mixed_currency=valuation.mixed_currency,
     )
 
 

@@ -33,6 +33,11 @@ class StockBase(ORMModel):
     company_name: str
     sector: str | None = None
     exchange: str | None = None
+    mic: str | None = None
+    region: str | None = None
+    country: str | None = None
+    # ISO 4217, except "GBp" for London, whose prices are quoted in pence.
+    currency: str | None = None
     market_cap: float | None = None
 
 
@@ -195,6 +200,7 @@ class PositionOut(BaseModel):
     market_value: float
     unrealised_pnl: float
     priced: bool = Field(description="False when valued at cost for lack of price history")
+    currency: str = Field(default="USD", description="Quote currency; GBp means pence")
 
 
 class PortfolioDetail(PortfolioOut):
@@ -205,6 +211,14 @@ class PortfolioDetail(PortfolioOut):
     realised_pnl: float = 0.0
     unrealised_pnl: float = 0.0
     total_return_pct: float | None = None
+    positions_by_currency: dict[str, float] = Field(
+        default_factory=dict, description="Market value per quote currency"
+    )
+    mixed_currency: bool = Field(
+        default=False,
+        description="True when holdings span currencies, so total_value is not FX-converted "
+        "and should not be read as a single figure",
+    )
 
 
 class SimulationRequest(BaseModel):

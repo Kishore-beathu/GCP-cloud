@@ -332,3 +332,130 @@ async def test_simulate_endpoint_returns_valuation(client, db, seeded_stocks):
 
 async def test_simulate_unknown_portfolio_404(client, seeded_stocks):
     assert (await client.post("/portfolios/999/simulate", json={})).status_code == 404
+
+
+# --- Multi-region search ------------------------------------------------------
+
+
+@pytest.fixture
+async def multi_region(db):
+    """A universe spanning all three regions."""
+    from app.models import Stock
+    from app.services import markets
+
+    seeds = [
+        ("PFE", "Pfizer Inc.", "pharma"),
+        ("MRNA", "Moderna Inc.", "biotech"),
+        ("SHOP.TO", "Shopify Inc.", "ai_tech"),
+        ("AZN.L", "AstraZeneca PLC", "pharma"),
+        ("NOVO-B.CO", "Novo Nordisk A/S", "pharma"),
+        ("ROG.SW", "Roche Holding AG", "pharma"),
+        ("4502.T", "Takeda Pharmaceutical", "pharma"),
+        ("2269.HK", "WuXi Biologics", "cdmo"),
+        ("CSL.AX", "CSL Limited", "biotech"),
+    ]
+    for ticker, name, sector in seeds:
+        market = markets.resolve(ticker)
+        db.add(
+            Stock(
+                ticker=ticker, company_name=name, sector=sector,
+                exchange=market.name, mic=market.mic, region=market.region,
+                country=market.country, currency=market.currency,
+            )
+        )
+    await db.commit()
+    return seeds
+
+
+async def test_search_by_region(client, multi_region):
+    for region, expected in [
+        ("europe", {"AZN.L", "NOVO-B.CO", "ROG.SW"}),
+        ("asia_pacific", {"4502.T", "2269.HK", "CSL.AX"}),
+    ]:
+        response = await client.get("/stocks", params={"region": region})
+        assert response.status_code == 200
+        assert {s["ticker"] for s in response.json()} == expected
+
+
+async def test_search_by_country_and_mic(client, multi_region):
+    japan = await client.get("/stocks", params={"country": "JP"})
+    assert {s["ticker"] for s in japan.json()} == {"4502.T"}
+
+    london = await client.get("/stocks", params={"mic": "XLON"})
+    assert {s["ticker"] for s in london.json()} == {"AZN.L"}
+
+
+async def test_search_by_currency(client, multi_region):
+    """London is quoted in pence, so its code is GBp, not GBP."""
+    response = await client.get("/stocks", params={"currency": "GBp"})
+    assert {s["ticker"] for s in response.json()} == {"AZN.L"}
+
+
+async def test_free_text_search_covers_ticker_and_name(client, multi_region):
+    by_name = await client.get("/stocks", params={"q": "novo"})
+    assert {s["ticker"] for s in by_name.json()} == {"NOVO-B.CO"}
+
+    # Searching a suffix finds every listing on that venue.
+    by_suffix = await client.get("/stocks", params={"q": ".t"})
+    assert "4502.T" in {s["ticker"] for s in by_suffix.json()}
+
+
+async def test_filters_combine_with_and(client, multi_region):
+    response = await client.get(
+        "/stocks", params={"region": "europe", "sector": "pharma"}
+    )
+    assert {s["ticker"] for s in response.json()} == {"AZN.L", "NOVO-B.CO", "ROG.SW"}
+
+    empty = await client.get("/stocks", params={"region": "europe", "sector": "cdmo"})
+    assert empty.json() == []
+
+
+async def test_search_is_case_insensitive(client, multi_region):
+    upper = await client.get("/stocks", params={"region": "EUROPE", "country": "gb"})
+    assert {s["ticker"] for s in upper.json()} == {"AZN.L"}
+
+
+async def test_stock_payload_carries_market_metadata(client, multi_region):
+    detail = (await client.get("/stocks/4502.T")).json()
+    assert detail["region"] == "asia_pacific"
+    assert detail["mic"] == "XTKS"
+    assert detail["country"] == "JP"
+    assert detail["currency"] == "JPY"
+
+
+async def test_markets_endpoint_summarises_the_universe(client, multi_region):
+    body = (await client.get("/stocks/markets")).json()
+    assert body["regions"] == {"north_america": 3, "europe": 3, "asia_pacific": 3}
+
+    mics = {venue["mic"] for venue in body["venues"]}
+    assert {"XNYS", "XTSE", "XLON", "XCSE", "XSWX", "XTKS", "XHKG", "XASX"} <= mics
+    assert all("is_open" in venue for venue in body["venues"])
+
+
+async def test_portfolio_flags_mixed_currency_holdings(client, db, multi_region):
+    """Summing JPY and USD market values produces a meaningless number."""
+    portfolio_id = (
+        await client.post("/portfolios", json={"name": "Global", "starting_cash": 100000})
+    ).json()["id"]
+
+    bought = await client.post(
+        f"/portfolios/{portfolio_id}/trades",
+        json={"ticker": "PFE", "side": "buy", "quantity": 10, "price": 30.0},
+    )
+    assert bought.status_code == 201, bought.json()
+    single = (await client.get(f"/portfolios/{portfolio_id}")).json()
+    assert single["mixed_currency"] is False
+    assert single["positions_by_currency"] == {"USD": 300.0}
+
+    # 10 shares at JPY 4,000. Cash is a bare number with no currency of its
+    # own, which is exactly why the mixed-currency flag matters.
+    bought_jp = await client.post(
+        f"/portfolios/{portfolio_id}/trades",
+        json={"ticker": "4502.T", "side": "buy", "quantity": 10, "price": 4000.0},
+    )
+    assert bought_jp.status_code == 201, bought_jp.json()
+
+    mixed = (await client.get(f"/portfolios/{portfolio_id}")).json()
+    assert mixed["mixed_currency"] is True
+    assert mixed["positions_by_currency"] == {"USD": 300.0, "JPY": 40000.0}
+    assert {p["currency"] for p in mixed["positions"]} == {"USD", "JPY"}

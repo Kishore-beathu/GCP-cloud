@@ -118,8 +118,12 @@ export function getNews(filters: NewsFilters = {}): Promise<NewsArticle[]> {
   return request(`/news?${params}`)
 }
 
-export function getStocks(): Promise<Stock[]> {
-  return request('/stocks?limit=1000')
+export function getStocks(filters: { region?: string; q?: string } = {}): Promise<Stock[]> {
+  const params = new URLSearchParams({ limit: '1000' })
+  for (const [key, value] of Object.entries(filters)) {
+    if (value) params.set(key, value)
+  }
+  return request(`/stocks?${params}`)
 }
 
 export function getStock(ticker: string): Promise<StockDetail> {

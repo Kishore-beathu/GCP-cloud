@@ -42,12 +42,19 @@ export interface NewsArticle {
   sentiment: SentimentOut | null
 }
 
+export type Region = 'north_america' | 'europe' | 'asia_pacific'
+
 export interface Stock {
   id: number
   ticker: string
   company_name: string
   sector: string | null
   exchange: string | null
+  mic: string | null
+  region: Region | null
+  country: string | null
+  /** ISO 4217, except 'GBp' for London, whose prices are quoted in pence. */
+  currency: string | null
   market_cap: number | null
 }
 

@@ -1,0 +1,111 @@
+# How this platform compares
+
+**Read this with two caveats.** My knowledge of commercial products has a
+training cutoff, and this sandbox's network policy blocks the vendor sites, so
+I could not verify anyone's current feature set or pricing while writing it.
+Treat the competitor columns as a map of *categories* to check, not as today's
+fact sheet. What is stated about **this** platform is verified against the code
+and the test suite.
+
+## The honest positioning
+
+This is not a Bloomberg competitor and should not try to be. It is a **narrow,
+self-hosted signal tool**: it watches a pharma/life-sciences universe, scores
+news for sentiment and business event type, alerts on what matters, and lets
+you test whether the signal actually predicted anything.
+
+Its real advantages are ones the large platforms structurally cannot offer:
+
+- **The scoring is yours and auditable.** `LexiconAnalyzer.explain()` shows
+  every term that fired and its weight. Commercial sentiment scores are opaque
+  numbers you must take on trust.
+- **Domain-tuned rather than general.** The lexicon knows what a complete
+  response letter, a CHMP positive opinion and a Form 483 mean. General
+  financial NLP treats them as ordinary words.
+- **You own the data.** Your alerts, portfolios and history live in your
+  database, exportable, with no per-seat licence and no vendor lock-in.
+- **Backtesting is built in.** Most news terminals show you sentiment; few let
+  you ask "did this signal actually move the price?" on your own history.
+
+## Where it stands against the field
+
+| Capability | This platform | Typical premium terminal | Typical retail/prosumer tool |
+|---|---|---|---|
+| Real-time prices | Finnhub trade stream, demand-driven subscriptions | Full depth, direct exchange feeds | Delayed or consolidated feed |
+| News coverage | SEC EDGAR + Finnhub company news | Dozens of wires, exclusive sources, transcripts | Aggregated web/RSS |
+| Sentiment | Transparent domain lexicon (or FinBERT) | Proprietary, opaque, broad-market | Often none, or a crude score |
+| Event taxonomy | 12 pharma-relevant types | Extensive, general-purpose | Rare |
+| Alerting | In-app, Slack, email | Every channel, highly configurable | Email/push |
+| Backtesting news impact | Yes, per event type | Usually a separate product | Rare |
+| Screening | Region/country/venue/currency/sector/text | Hundreds of fundamental fields | Dozens of fields |
+| Fundamentals | **None** | Comprehensive | Moderate |
+| Analyst estimates | **None** | Comprehensive | Some |
+| Filing full text | **Metadata only** | Full text + search | Varies |
+| Cost | Infrastructure + data API fees | Very high per seat | Low to moderate |
+
+## The gaps that matter most
+
+Ranked by how much they limit the product today:
+
+1. **No fundamentals or estimates.** You can see that a stock had good news;
+   you cannot see whether it is expensive. Finnhub's `/stock/metric` and
+   `/stock/recommendation` endpoints would close much of this with the key you
+   already have.
+2. **Filing metadata, not filing text.** The platform reads *that* an 8-K was
+   filed and which items it reported, not what it said. Fetching the primary
+   document and scoring its text is the single biggest signal upgrade
+   available, and needs no new vendor.
+3. **No FX conversion.** With a multi-region universe a portfolio can hold JPY,
+   EUR and USD lines. The valuation reports a per-currency breakdown and flags
+   `mixed_currency` rather than presenting a meaningless total — honest, but a
+   real limitation.
+4. **No corporate actions.** Splits and dividends are not adjusted for, so a
+   split shows up as a price crash in the backtester.
+5. **Single-instance by design.** The scheduler must not run twice and the
+   WebSocket hub keeps subscriber state in memory. Scaling out needs Redis.
+6. **No holiday calendars.** Market sessions are weekday-and-clock only, so a
+   public holiday reads as an open market with no trades.
+
+## Multi-region coverage
+
+The universe now spans three regions, resolved from the vendor symbol suffix
+(`app/services/markets.py`):
+
+| Region | Venues covered | Example symbols |
+|---|---|---|
+| North America | US, Toronto, TSX Venture, Cboe Canada, Mexico | `PFE`, `SHOP.TO`, `WALMEX.MX` |
+| Europe | London, Euronext (Paris/Amsterdam/Brussels/Lisbon/Dublin), XETRA, Frankfurt, SIX, Milan, Madrid, Stockholm, Copenhagen, Helsinki, Oslo, Vienna, Warsaw, Athens | `AZN.L`, `SAN.PA`, `ROG.SW`, `NOVO-B.CO` |
+| Asia-Pacific | Tokyo, Hong Kong, Shanghai, Shenzhen, Korea, KOSDAQ, Taiwan, Singapore, India (NSE/BSE), Australia, New Zealand, Thailand, Indonesia, Malaysia | `4502.T`, `2269.HK`, `207940.KS`, `CSL.AX` |
+
+Two regional details are encoded deliberately because they cause silent errors:
+
+- **London quotes in pence**, so its currency code is `GBp` and
+  `markets.normalise_price()` divides by 100. Without this a London price reads
+  100x too high against a US cross-listing.
+- **Sessions do not overlap.** Tokyo closes before New York opens. A quiet
+  price stream at 09:00 UTC is a closed market, not a broken feed —
+  `GET /stocks/markets` shows which venues are open right now.
+
+### One caveat on non-US coverage
+
+**SEC EDGAR only covers US registrants.** A European or Asian company without a
+US listing files with its home regulator, not the SEC, so for those names the
+platform depends entirely on Finnhub news. Adding RNS (UK), the EU's OAM
+network, TDnet (Japan) or HKEX filings would close that gap; none is wired up
+today.
+
+This is also why the seed universe carries both the ADR and the home line for
+the big names — `NVO` and `NOVO-B.CO`, `AZN` and `AZN.L`. The ADR brings SEC
+filings and US-hours liquidity; the home line brings the domestic session and
+local currency.
+
+## What I would do next, in order
+
+1. **Fetch and score SEC filing text**, not just item codes — biggest signal
+   gain, no new vendor.
+2. **Add Finnhub fundamentals and analyst recommendations** — closes the
+   largest capability gap with the key you already have.
+3. **Corporate actions** so the backtester stops reading splits as crashes.
+4. **FX rates** so multi-region portfolios can show one trustworthy total.
+5. **Exchange holiday calendars** so "market open" is true rather than
+   approximate.

@@ -38,7 +38,8 @@ universe — no code change needed.
 |--------|------|---------|
 | GET | `/health` | Liveness + database probe |
 | GET | `/news` | Scored news feed; filter by `ticker`, `sentiment`, `event_type`, `source`, `min_score`, `since_days` |
-| GET | `/stocks` | Tracked universe, filterable by `sector` |
+| GET | `/stocks` | Search the universe: `q`, `sector`, `region`, `country`, `mic`, `currency` |
+| GET | `/stocks/markets` | Venues tracked, per-region counts, and which are open now |
 | GET | `/stocks/{ticker}` | Detail: latest price + recent scored news |
 | POST | `/alerts` | Create an alert (`positive_news`, `negative_news`, `sentiment_spike`, `event_type`, `price_change`) |
 | GET | `/alerts` | List alerts; `/alerts/history` shows firings |
@@ -103,6 +104,50 @@ Both backends also classify each headline into a business event taxonomy
 (`fda_approval`, `clinical_trial`, `revenue`, `merger_acquisition`, `recall`,
 `partnership`, `litigation`, `exec_change`, `facility`, `analyst_rating`,
 `capital_raise`, `other`) — alerts and backtests key off these.
+
+## Markets and regions
+
+The universe spans **North America, Europe and Asia-Pacific**. A listing's
+venue, country, currency and trading session are resolved from the vendor
+symbol suffix (`app/services/markets.py`) and stored on the row, so they are
+filterable without re-parsing symbols per query:
+
+```bash
+curl "localhost:8000/stocks?region=europe&sector=biotech"
+curl "localhost:8000/stocks?country=JP"
+curl "localhost:8000/stocks?mic=XLON"
+curl "localhost:8000/stocks?q=novo"        # finds NVO (ADR) and NOVO-B.CO (home line)
+curl "localhost:8000/stocks/markets"       # per-region counts, sessions, open now
+```
+
+| Region | Example symbols |
+|--------|-----------------|
+| `north_america` | `PFE`, `SHOP.TO`, `WALMEX.MX` |
+| `europe` | `AZN.L`, `SAN.PA`, `ROG.SW`, `NOVO-B.CO`, `BAYN.DE` |
+| `asia_pacific` | `4502.T`, `2269.HK`, `207940.KS`, `SUNPHARMA.NS`, `CSL.AX` |
+
+Two regional details are encoded deliberately, because both cause silent errors:
+
+- **London quotes in pence.** Its currency code is `GBp`, and
+  `markets.normalise_price()` divides by 100. Without it a London price reads
+  100x too high next to a US cross-listing.
+- **Sessions do not overlap.** Tokyo closes before New York opens, so a quiet
+  price stream at 09:00 UTC is a closed market rather than a broken feed.
+  `GET /stocks/markets` reports which venues are trading right now.
+
+**SEC EDGAR only covers US registrants.** European and Asian companies without
+a US listing file with their home regulator, so for those names the platform
+relies on Finnhub news alone. The seed universe therefore carries both lines
+for the big names — `NVO` and `NOVO-B.CO`, `AZN` and `AZN.L` — because the ADR
+brings SEC filings and US-hours liquidity while the home line brings the
+domestic session and local currency.
+
+Growing the universe across regions:
+
+```bash
+FINNHUB_API_KEY=... .venv/bin/python scripts/build_universe.py \
+    --exchange US,L,PA,AS,DE,SW,CO,ST,MI,MC,BR,TO,T,HK,SS,KS,NS,AX --limit 1000
+```
 
 ## Data sources
 
@@ -233,6 +278,12 @@ curl -X POST http://localhost:8000/portfolios/1/trades -H 'Content-Type: applica
 curl -X POST http://localhost:8000/portfolios/1/simulate -H 'Content-Type: application/json' \
   -d '{"days": 180, "hold_days": 5, "position_size_pct": 10}'
 ```
+
+**Multi-currency holdings are not FX-converted.** A portfolio can hold JPY,
+EUR and USD lines at once, and adding those numbers together produces a figure
+that means nothing. The valuation reports `positions_by_currency` and sets
+`mixed_currency: true` rather than presenting a misleading total; converting
+properly needs an FX rate source the platform does not have yet.
 
 The trade log is the source of truth — positions and average cost are derived
 by replaying it, so they cannot drift. Holdings with no price history are
@@ -377,7 +428,7 @@ clients talk to this API, not to Supabase directly.
 .venv/bin/python -m pytest
 ```
 
-237 tests cover sentiment scoring, event classification, ingestion/dedup, alert
+274 tests cover sentiment scoring, event classification, ingestion/dedup, alert
 matching and delivery, the REST API, the WebSocket hub, backtesting, scheduler
 batch rotation, portfolio maths and simulation, and every data integration
 (SEC, Finnhub REST, Alpha Vantage) against mocked transports. The live price

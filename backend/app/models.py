@@ -69,10 +69,18 @@ class Stock(Base):
     __tablename__ = "stocks"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    ticker: Mapped[str] = mapped_column(String(16), unique=True, index=True)
+    # Vendor symbol including any venue suffix: PFE, AZN.L, 7203.T, SHOP.TO.
+    ticker: Mapped[str] = mapped_column(String(24), unique=True, index=True)
     company_name: Mapped[str] = mapped_column(String(255))
     sector: Mapped[str | None] = mapped_column(String(64), index=True)
-    exchange: Mapped[str | None] = mapped_column(String(32))
+    exchange: Mapped[str | None] = mapped_column(String(64))
+    # Derived from the ticker suffix at seed time (app/services/markets.py) so
+    # region and currency are filterable without re-parsing symbols per query.
+    mic: Mapped[str | None] = mapped_column(String(8), index=True)
+    region: Mapped[str | None] = mapped_column(String(16), index=True)
+    country: Mapped[str | None] = mapped_column(String(2), index=True)
+    # ISO 4217, except London's GBp: prices there are quoted in pence.
+    currency: Mapped[str | None] = mapped_column(String(3))
     cik: Mapped[str | None] = mapped_column(String(16), index=True)
     market_cap: Mapped[float | None] = mapped_column(Float)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, server_default="1")
