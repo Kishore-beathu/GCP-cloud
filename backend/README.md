@@ -44,6 +44,12 @@ universe — no code change needed.
 | GET | `/alerts` | List alerts; `/alerts/history` shows firings |
 | DELETE | `/alerts/{id}` | Deactivate (history is kept) |
 | GET | `/backtest?ticker=MRNA&days=90` | Price impact by event type + signal accuracy |
+| GET | `/portfolios` | List paper-trading portfolios |
+| POST | `/portfolios` | Create one (`{"name": "...", "starting_cash": 100000}`) |
+| GET | `/portfolios/{id}` | Positions and valuation at latest prices |
+| POST | `/portfolios/{id}/trades` | Record a buy/sell (price optional — defaults to latest close) |
+| GET | `/portfolios/{id}/trades` | Trade log, newest first |
+| POST | `/portfolios/{id}/simulate` | Replay the sentiment strategy over stored history |
 | GET | `/jobs/status` | Scheduler state and next run times |
 | POST | `/admin/seed` | Re-run universe seeding |
 | POST | `/admin/ingest/sec` | Trigger an SEC pull now (optional `?ticker=MRNA&ticker=PFE`) |
@@ -112,6 +118,62 @@ curl -X POST "http://localhost:8000/admin/backfill/prices?ticker=MRNA&outputsize
 
 \* Only registered when the corresponding API key is configured, so
 `/jobs/status` reflects what is actually running.
+
+## Alert notification channels
+
+Alerts always deliver in-app over the WebSocket. Two external channels are
+available, each activating only once configured:
+
+| Channel | Setting | Notes |
+|---------|---------|-------|
+| `slack` | `SLACK_WEBHOOK_URL` | Slack Incoming Webhook; posts a formatted block message with a link button |
+| `email` | `SMTP_HOST`, `EMAIL_TO`, … | Plain SMTP. Gmail requires an App Password, not your account password |
+
+Name them when creating an alert:
+
+```bash
+curl -X POST http://localhost:8000/alerts -H 'Content-Type: application/json' -d '{
+  "ticker": "MRNA",
+  "alert_type": "event_type",
+  "condition": {"event_type": "fda_approval", "email_to": "desk@example.com"},
+  "channels": ["in_app", "slack", "email"]
+}'
+```
+
+`condition.email_to` overrides the default recipients for that one alert.
+
+Delivery is best-effort and deliberately isolated: notifications are sent
+*after* the firing is committed to `alert_history`, so a broken webhook or a
+dead SMTP server can never lose a record or abort an ingestion run. Failures
+are logged, not raised.
+
+## Portfolio simulator
+
+Paper-trade against stored prices, or replay the sentiment signal to see how it
+would have performed:
+
+```bash
+# Create a portfolio
+curl -X POST http://localhost:8000/portfolios -H 'Content-Type: application/json' \
+  -d '{"name": "Paper", "starting_cash": 100000}'
+
+# Trade manually (omit "price" to fill at the latest stored close)
+curl -X POST http://localhost:8000/portfolios/1/trades -H 'Content-Type: application/json' \
+  -d '{"ticker": "MRNA", "side": "buy", "quantity": 100}'
+
+# Replay the strategy: buy each positive story, hold 5 days, exit early on bad news
+curl -X POST http://localhost:8000/portfolios/1/simulate -H 'Content-Type: application/json' \
+  -d '{"days": 180, "hold_days": 5, "position_size_pct": 10}'
+```
+
+The trade log is the source of truth — positions and average cost are derived
+by replaying it, so they cannot drift. Holdings with no price history are
+valued at cost rather than dropped, so totals stay meaningful before a
+backfill. Simulated trades accumulate in the portfolio, so use a fresh one per
+run.
+
+The simulator is a teaching tool for the signal, not a production backtester:
+fills are close-to-close with no slippage, commissions, or shorting.
 
 ## Growing the ticker universe
 
@@ -184,17 +246,22 @@ clients talk to this API, not to Supabase directly.
 .venv/bin/python -m pytest
 ```
 
-84 tests cover sentiment scoring, event classification, ingestion/dedup, alert
-matching, the REST API, the WebSocket hub, backtesting, scheduler batch
-rotation, and all three integrations (SEC, Finnhub, Alpha Vantage) with mocked
-transports — no network needed.
+118 tests cover sentiment scoring, event classification, ingestion/dedup, alert
+matching and delivery, the REST API, the WebSocket hub, backtesting, scheduler
+batch rotation, portfolio maths and simulation, and all three data integrations
+(SEC, Finnhub, Alpha Vantage) with mocked transports — no network needed.
 
 ## Roadmap (from the build plan)
 
 - **Week 2 (done)** — Finnhub news, Alpha Vantage quotes + history backfill,
   universe tooling for ~1000 symbols.
-- **Week 3** — React dashboard, Electron desktop packaging, mobile-responsive
-  PWA.
-- **Week 4** — Slack/email/push notification channels (the dispatch seam is
-  `app/services/alerts.py::_dispatch`), portfolio simulator, Redis price cache
-  if scale demands it, GCP Cloud Run + Cloud SQL deployment.
+- **Week 3 (done)** — React dashboard, Electron desktop packaging,
+  mobile-responsive PWA.
+- **Week 4 (done)** — Slack and email notification channels, portfolio
+  simulator, Docker image and GCP Cloud Run deployment (see
+  [`../docs/DEPLOYMENT.md`](../docs/DEPLOYMENT.md)).
+
+Possible next steps: Alembic migrations before the first destructive schema
+change, Redis pub/sub if the WebSocket hub ever needs to span more than one
+instance, and mobile push (APNs/FCM) which would slot in beside Slack and email
+in `app/services/notifications.py`.

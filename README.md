@@ -13,6 +13,7 @@ and backtests how news historically moved prices.
 | [`backend/`](backend/) | FastAPI + PostgreSQL backend: ingestion, sentiment, alerts, WebSocket streaming, backtesting. **Start here** — see [`backend/README.md`](backend/README.md). |
 | [`frontend/`](frontend/) | React + TypeScript dashboard: live watchlist, ticker tape, news feed, chart, alerts, backtest view. See [`frontend/README.md`](frontend/README.md). |
 | [`desktop/`](desktop/) | Electron shell that packages the dashboard as a Windows desktop app. |
+| [`docs/`](docs/) | Deployment guide for Cloud Run + Cloud SQL. |
 
 ## Build phases
 
@@ -27,5 +28,6 @@ This follows the accelerated 4-week plan:
 3. **Week 3** — React dashboard with live WebSocket prices, news feed, charts,
    alert UI, and backtest view; Electron desktop shell for Windows;
    mobile-responsive layout with a PWA manifest. ✅
-4. **Week 4** — Slack/email/push alert channels, portfolio simulator,
-   GCP deployment (Cloud Run + Cloud SQL).
+4. **Week 4** — Slack and email alert channels, paper-trading portfolio with a
+   sentiment-strategy simulator, Docker image and GCP Cloud Run deployment
+   (see [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md)). ✅

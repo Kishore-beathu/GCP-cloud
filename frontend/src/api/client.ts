@@ -6,10 +6,15 @@ import type {
   AlertType,
   BacktestResult,
   NewsArticle,
+  Portfolio,
+  PortfolioDetail,
   Price,
   Sentiment,
+  SimulationResponse,
   Stock,
   StockDetail,
+  Trade,
+  TradeSide,
 } from './types'
 
 export const API_URL: string =
@@ -87,4 +92,49 @@ export function getAlertHistory(): Promise<AlertHistoryEntry[]> {
 
 export function getBacktest(ticker: string, days = 180): Promise<BacktestResult> {
   return request(`/backtest?ticker=${encodeURIComponent(ticker)}&days=${days}`)
+}
+
+// --- Portfolio --------------------------------------------------------------
+
+export function getPortfolios(): Promise<Portfolio[]> {
+  return request('/portfolios')
+}
+
+export function createPortfolio(input: {
+  name: string
+  starting_cash: number
+}): Promise<Portfolio> {
+  return request('/portfolios', { method: 'POST', body: JSON.stringify(input) })
+}
+
+export function getPortfolio(id: number): Promise<PortfolioDetail> {
+  return request(`/portfolios/${id}`)
+}
+
+export function deletePortfolio(id: number): Promise<void> {
+  return request(`/portfolios/${id}`, { method: 'DELETE' })
+}
+
+export function getTrades(id: number): Promise<Trade[]> {
+  return request(`/portfolios/${id}/trades`)
+}
+
+export function createTrade(
+  id: number,
+  input: { ticker: string; side: TradeSide; quantity: number; price?: number },
+): Promise<Trade> {
+  return request(`/portfolios/${id}/trades`, {
+    method: 'POST',
+    body: JSON.stringify(input),
+  })
+}
+
+export function runSimulation(
+  id: number,
+  input: { days?: number; hold_days?: number; min_score?: number },
+): Promise<SimulationResponse> {
+  return request(`/portfolios/${id}/simulate`, {
+    method: 'POST',
+    body: JSON.stringify(input),
+  })
 }

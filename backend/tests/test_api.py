@@ -187,3 +187,139 @@ async def test_price_history_endpoint(client, db, seeded_stocks):
     assert closes == [100.0, 101.0, 102.0]  # oldest first
 
     assert (await client.get("/stocks/NOSUCH/prices")).status_code == 404
+
+
+async def test_portfolio_crud_and_valuation(client, db, seeded_stocks):
+    from datetime import datetime, timezone
+
+    from app.models import StockPrice
+
+    created = await client.post(
+        "/portfolios", json={"name": "Paper", "starting_cash": 5000.0}
+    )
+    assert created.status_code == 201
+    portfolio_id = created.json()["id"]
+    assert created.json()["cash"] == 5000.0
+
+    listed = await client.get("/portfolios")
+    assert [p["id"] for p in listed.json()] == [portfolio_id]
+
+    # A trade with an explicit price needs no stored history.
+    trade = await client.post(
+        f"/portfolios/{portfolio_id}/trades",
+        json={"ticker": "mrna", "side": "buy", "quantity": 10, "price": 100.0},
+    )
+    assert trade.status_code == 201
+    assert trade.json()["ticker"] == "MRNA"
+
+    detail = (await client.get(f"/portfolios/{portfolio_id}")).json()
+    assert detail["cash"] == 4000.0
+    assert detail["positions"][0]["quantity"] == 10
+    assert detail["total_value"] == 5000.0  # unpriced: valued at cost
+
+    # Once a price exists, the valuation follows it.
+    db.add(
+        StockPrice(
+            ticker_id=seeded_stocks[0].id,
+            close=150.0,
+            price_date=datetime.now(timezone.utc),
+            source="test",
+        )
+    )
+    await db.commit()
+
+    detail = (await client.get(f"/portfolios/{portfolio_id}")).json()
+    assert detail["total_value"] == 5500.0
+    assert detail["unrealised_pnl"] == 500.0
+    assert detail["total_return_pct"] == 10.0
+
+    trades = (await client.get(f"/portfolios/{portfolio_id}/trades")).json()
+    assert len(trades) == 1
+
+    assert (await client.delete(f"/portfolios/{portfolio_id}")).status_code == 204
+    assert (await client.get(f"/portfolios/{portfolio_id}")).status_code == 404
+
+
+async def test_trade_without_price_or_history_is_422(client, seeded_stocks):
+    portfolio_id = (
+        await client.post("/portfolios", json={"name": "P", "starting_cash": 1000.0})
+    ).json()["id"]
+
+    response = await client.post(
+        f"/portfolios/{portfolio_id}/trades",
+        json={"ticker": "MRNA", "side": "buy", "quantity": 1},
+    )
+    assert response.status_code == 422
+    assert "backfill" in response.json()["detail"]
+
+
+async def test_trade_beyond_cash_is_409(client, seeded_stocks):
+    portfolio_id = (
+        await client.post("/portfolios", json={"name": "P", "starting_cash": 100.0})
+    ).json()["id"]
+
+    response = await client.post(
+        f"/portfolios/{portfolio_id}/trades",
+        json={"ticker": "MRNA", "side": "buy", "quantity": 10, "price": 100.0},
+    )
+    assert response.status_code == 409
+
+
+async def test_trade_unknown_ticker_404(client, seeded_stocks):
+    portfolio_id = (
+        await client.post("/portfolios", json={"name": "P", "starting_cash": 100.0})
+    ).json()["id"]
+
+    response = await client.post(
+        f"/portfolios/{portfolio_id}/trades",
+        json={"ticker": "NOSUCH", "side": "buy", "quantity": 1, "price": 1.0},
+    )
+    assert response.status_code == 404
+
+
+async def test_simulate_endpoint_returns_valuation(client, db, seeded_stocks):
+    from datetime import datetime, timedelta, timezone
+
+    from app.models import StockPrice
+    from app.services.ingest import RawArticle, store_articles
+
+    start = datetime.now(timezone.utc) - timedelta(days=20)
+    for offset in range(20):
+        db.add(
+            StockPrice(
+                ticker_id=seeded_stocks[0].id,
+                close=100.0 + offset,
+                price_date=start + timedelta(days=offset),
+                source="test",
+            )
+        )
+    await db.commit()
+    await store_articles(
+        db,
+        [
+            RawArticle(
+                ticker="MRNA",
+                headline="FDA approves therapy after priority review",
+                url="https://example.com/sim-api",
+                source="test_feed",
+                published_at=start + timedelta(days=1),
+            )
+        ],
+    )
+
+    portfolio_id = (
+        await client.post("/portfolios", json={"name": "Sim", "starting_cash": 10000.0})
+    ).json()["id"]
+
+    response = await client.post(
+        f"/portfolios/{portfolio_id}/simulate", json={"days": 60, "hold_days": 5}
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["signals_seen"] == 1
+    assert body["trades_executed"] == 2
+    assert body["valuation"]["total_value"] > 10000.0
+
+
+async def test_simulate_unknown_portfolio_404(client, seeded_stocks):
+    assert (await client.post("/portfolios/999/simulate", json={})).status_code == 404

@@ -46,6 +46,23 @@ export function ChangeText({ value }: { value: number | null | undefined }) {
   )
 }
 
+/** A signed currency amount — for P&L figures, which are money, not percentages. */
+export function MoneyDelta({ value }: { value: number | null | undefined }) {
+  if (value === null || value === undefined) return <span className="muted">—</span>
+  const cls = value > 0 ? 'up' : value < 0 ? 'down' : 'muted'
+  const formatted = Math.abs(value).toLocaleString(undefined, {
+    style: 'currency',
+    currency: 'USD',
+    maximumFractionDigits: 0,
+  })
+  return (
+    <span className={cls}>
+      {value > 0 ? '+' : value < 0 ? '−' : ''}
+      {formatted}
+    </span>
+  )
+}
+
 export function formatTime(iso: string): string {
   const date = new Date(iso)
   const now = Date.now()

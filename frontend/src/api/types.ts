@@ -152,3 +152,55 @@ export type ServerMessage =
   | { type: 'subscribed'; tickers: string[] }
   | { type: 'pong'; timestamp: string }
   | { type: 'error'; detail?: string; ticker?: string }
+
+// --- Portfolio --------------------------------------------------------------
+
+export type TradeSide = 'buy' | 'sell'
+
+export interface Portfolio {
+  id: number
+  user_id: string
+  name: string
+  starting_cash: number
+  cash: number
+  created_at: string
+}
+
+export interface PositionRow {
+  ticker: string
+  quantity: number
+  average_cost: number
+  last_price: number | null
+  market_value: number
+  unrealised_pnl: number
+  priced: boolean
+}
+
+export interface PortfolioDetail extends Portfolio {
+  positions: PositionRow[]
+  cash_value: number
+  positions_value: number
+  total_value: number
+  realised_pnl: number
+  unrealised_pnl: number
+  total_return_pct: number | null
+}
+
+export interface Trade {
+  id: number
+  ticker: string
+  side: TradeSide
+  quantity: number
+  price: number
+  executed_at: string
+  rationale: string | null
+}
+
+export interface SimulationResponse {
+  portfolio_id: number
+  trades_executed: number
+  signals_seen: number
+  signals_skipped: number
+  skip_reasons: Record<string, number>
+  valuation: PortfolioDetail | null
+}

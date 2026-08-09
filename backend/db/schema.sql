@@ -111,6 +111,31 @@ CREATE TABLE IF NOT EXISTS alert_history (
 
 CREATE INDEX IF NOT EXISTS ix_alert_history_triggered ON alert_history (triggered_at DESC);
 
+-- ---------------------------------------------------------------- portfolio --
+CREATE TABLE IF NOT EXISTS portfolios (
+    id              SERIAL PRIMARY KEY,
+    user_id         VARCHAR(64)   NOT NULL DEFAULT 'local',
+    name            VARCHAR(128)  NOT NULL,
+    starting_cash   DOUBLE PRECISION NOT NULL DEFAULT 100000,
+    cash            DOUBLE PRECISION NOT NULL DEFAULT 100000,
+    created_at      TIMESTAMPTZ   NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS ix_portfolios_user ON portfolios (user_id);
+
+CREATE TABLE IF NOT EXISTS trades (
+    id            SERIAL PRIMARY KEY,
+    portfolio_id  INTEGER NOT NULL REFERENCES portfolios (id) ON DELETE CASCADE,
+    ticker_id     INTEGER NOT NULL REFERENCES stocks (id) ON DELETE CASCADE,
+    side          VARCHAR(8)  NOT NULL,
+    quantity      DOUBLE PRECISION NOT NULL,
+    price         DOUBLE PRECISION NOT NULL,
+    executed_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    rationale     VARCHAR(255)
+);
+CREATE INDEX IF NOT EXISTS ix_trades_portfolio ON trades (portfolio_id);
+CREATE INDEX IF NOT EXISTS ix_trades_ticker ON trades (ticker_id);
+CREATE INDEX IF NOT EXISTS ix_trades_portfolio_executed ON trades (portfolio_id, executed_at);
+
 -- ------------------------------------------------------ row level security --
 -- Supabase (and similar platforms) expose the public schema through an
 -- auto-generated REST API keyed by a publishable token. Enabling RLS with no
@@ -122,5 +147,7 @@ ALTER TABLE sentiment_scores ENABLE ROW LEVEL SECURITY;
 ALTER TABLE stock_prices     ENABLE ROW LEVEL SECURITY;
 ALTER TABLE user_alerts      ENABLE ROW LEVEL SECURITY;
 ALTER TABLE alert_history    ENABLE ROW LEVEL SECURITY;
+ALTER TABLE portfolios       ENABLE ROW LEVEL SECURITY;
+ALTER TABLE trades           ENABLE ROW LEVEL SECURITY;
 
 COMMIT;

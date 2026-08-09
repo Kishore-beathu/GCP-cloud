@@ -75,6 +75,32 @@ class Settings(BaseSettings):
     alpha_vantage_interval_seconds: int = 60
     alpha_vantage_batch_size: int = 5
 
+    # --- Notification channels ----------------------------------------------
+    # Each channel activates only when configured; alerts naming an
+    # unconfigured channel still deliver in-app and log the gap.
+    slack_webhook_url: str | None = None
+
+    smtp_host: str | None = None
+    smtp_port: int = 587
+    smtp_username: str | None = None
+    smtp_password: str | None = None
+    smtp_use_tls: bool = True
+    email_from: str | None = None
+    # Default recipients when an alert's condition carries no "email_to".
+    email_to: list[str] = Field(default_factory=list)
+
+    # Timeout for outbound notification calls; a slow webhook must never stall
+    # the ingestion pipeline that triggered it.
+    notification_timeout_seconds: float = 10.0
+
+    @field_validator("email_to", mode="before")
+    @classmethod
+    def _split_recipients(cls, value: object) -> object:
+        """Accept a comma-separated string so EMAIL_TO works as a plain env var."""
+        if isinstance(value, str):
+            return [address.strip() for address in value.split(",") if address.strip()]
+        return value
+
     @field_validator("cors_origins", mode="before")
     @classmethod
     def _split_origins(cls, value: object) -> object:

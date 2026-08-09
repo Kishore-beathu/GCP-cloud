@@ -12,7 +12,7 @@ from fastapi.responses import JSONResponse
 from app.config import get_settings
 from app.database import create_all, dispose_engine, get_session_factory
 from app.logging_config import configure_logging
-from app.routers import alerts, backtest, news, stocks, system, ws
+from app.routers import alerts, backtest, news, portfolios, stocks, system, ws
 from app.scheduler import shutdown_scheduler, start_scheduler
 from app.services.tickers import seed_stocks
 
@@ -67,6 +67,7 @@ def create_app() -> FastAPI:
     app.include_router(stocks.router)
     app.include_router(alerts.router)
     app.include_router(backtest.router)
+    app.include_router(portfolios.router)
     app.include_router(ws.router)
 
     @app.exception_handler(Exception)

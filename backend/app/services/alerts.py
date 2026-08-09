@@ -1,22 +1,35 @@
 """Alert matching and dispatch.
 
-Week 1 records every firing in ``alert_history`` and pushes it to connected
-WebSocket clients. Slack, email, and mobile push land in Week 4 — they plug in
-at ``_dispatch`` without touching the matching rules.
+Every firing is recorded in ``alert_history`` and pushed to connected WebSocket
+clients immediately. External channels (Slack, email) are collected into a
+``PendingNotification`` list and delivered by the caller *after* the database
+transaction commits, so a slow webhook or SMTP server never holds a transaction
+open and a delivery failure never costs us the history row.
 """
 
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import AlertHistory, AlertType, NewsArticle, SentimentScore, UserAlert
+from app.models import AlertHistory, AlertType, NewsArticle, SentimentScore, Stock, UserAlert
+from app.services.notifications import IN_APP, notify
 from app.services.streams import ticker_hub
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class PendingNotification:
+    """One firing waiting to go out over its external channels."""
+
+    channels: list[str]
+    payload: dict
+    condition: dict = field(default_factory=dict)
 
 
 def _matches(alert: UserAlert, score: SentimentScore) -> bool:
@@ -49,23 +62,39 @@ def _matches(alert: UserAlert, score: SentimentScore) -> bool:
 
 
 async def evaluate_alerts_for_article(
-    db: AsyncSession, article: NewsArticle, score: SentimentScore
+    db: AsyncSession,
+    article: NewsArticle,
+    score: SentimentScore,
+    ticker: str | None = None,
+    pending: list[PendingNotification] | None = None,
 ) -> int:
-    """Fire every active alert on this article's ticker that matches. Returns the count."""
+    """Fire every active alert on this article's ticker that matches.
+
+    Returns the number of alerts triggered. External-channel deliveries are
+    appended to ``pending`` for the caller to flush post-commit; when no list is
+    supplied they are sent inline (convenient for one-off callers and tests).
+    """
     result = await db.execute(
         select(UserAlert).where(
             UserAlert.ticker_id == article.ticker_id, UserAlert.is_active.is_(True)
         )
     )
-    triggered = 0
+    alerts = list(result.scalars())
+    if not alerts:
+        return 0
 
-    for alert in result.scalars():
+    if ticker is None:
+        ticker = await db.scalar(select(Stock.ticker).where(Stock.id == article.ticker_id))
+
+    triggered = 0
+    for alert in alerts:
         if not _matches(alert, score):
             continue
 
         payload = {
             "alert_id": alert.id,
             "article_id": article.id,
+            "ticker": ticker,
             "headline": article.headline,
             "url": article.url,
             "source": article.source,
@@ -77,23 +106,40 @@ async def evaluate_alerts_for_article(
         db.add(AlertHistory(alert_id=alert.id, article_id=article.id, payload=payload))
         alert.last_triggered_at = datetime.now(timezone.utc)
         triggered += 1
-        await _dispatch(alert, payload)
+
+        channels = list(alert.channels or [IN_APP])
+        if IN_APP in channels:
+            # In-memory fan-out to WebSocket clients: instant, no I/O to wait on.
+            await ticker_hub.broadcast_alert(payload)
+
+        external = [channel for channel in channels if channel != IN_APP]
+        if external:
+            item = PendingNotification(external, payload, dict(alert.condition or {}))
+            if pending is None:
+                await deliver(item)
+            else:
+                pending.append(item)
 
     return triggered
 
 
-async def _dispatch(alert: UserAlert, payload: dict) -> None:
-    """Deliver a firing to its configured channels."""
-    channels = alert.channels or ["in_app"]
-    if "in_app" in channels:
-        await ticker_hub.broadcast_alert(payload)
-
-    unsupported = [c for c in channels if c != "in_app"]
-    if unsupported:
-        # Explicit and visible rather than silently dropped, so the gap is obvious
-        # in logs until the Week 4 notification service lands.
-        logger.info(
-            "Alert %s: channels %s not yet implemented, delivered in-app only",
-            alert.id,
-            ", ".join(unsupported),
+async def deliver(item: PendingNotification) -> dict:
+    """Send one pending notification over its external channels."""
+    results = await notify(item.channels, item.payload, item.condition)
+    failed = [channel for channel, ok in results.items() if not ok]
+    if failed:
+        logger.warning(
+            "Alert %s: delivery failed on %s",
+            item.payload.get("alert_id"),
+            ", ".join(failed),
         )
+    return results
+
+
+async def deliver_all(pending: list[PendingNotification]) -> None:
+    """Flush a batch of pending notifications. Never raises."""
+    for item in pending:
+        try:
+            await deliver(item)
+        except Exception:  # noqa: BLE001 - delivery is best-effort
+            logger.exception("Notification delivery raised for alert %s", item.payload.get("alert_id"))

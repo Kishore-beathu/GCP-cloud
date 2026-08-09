@@ -15,7 +15,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import NewsArticle, SentimentScore, Stock
-from app.services.alerts import evaluate_alerts_for_article
+from app.services.alerts import PendingNotification, deliver_all, evaluate_alerts_for_article
 from app.services.sentiment import SentimentAnalyzer, get_analyzer
 
 logger = logging.getLogger(__name__)
@@ -87,7 +87,7 @@ async def store_articles(
     analyzer = analyzer or get_analyzer()
     stocks = await _load_stock_map(db, {a.ticker.upper() for a in articles})
     seen = await _existing_urls(db, articles)
-    stored: list[tuple[NewsArticle, SentimentScore]] = []
+    stored: list[tuple[NewsArticle, SentimentScore, str]] = []
 
     for raw in articles:
         ticker = raw.ticker.upper()
@@ -125,7 +125,7 @@ async def store_articles(
             model_version=sentiment.model_version,
         )
         db.add(score)
-        stored.append((article, score))
+        stored.append((article, score, ticker))
         report.added += 1
 
     if not stored:
@@ -134,9 +134,16 @@ async def store_articles(
     # Flush so every article has a primary key before alerts reference it.
     await db.flush()
 
-    for article, score in stored:
-        report.alerts_triggered += await evaluate_alerts_for_article(db, article, score)
+    pending: list[PendingNotification] = []
+    for article, score, ticker in stored:
+        report.alerts_triggered += await evaluate_alerts_for_article(
+            db, article, score, ticker, pending
+        )
 
     await db.commit()
+    # Slack/email go out only once the firing is durably recorded, and outside
+    # the transaction so their latency cannot hold database locks.
+    await deliver_all(pending)
+
     logger.info("Ingest complete: %s", report.as_dict())
     return report

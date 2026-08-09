@@ -5,6 +5,7 @@ import { AlertToasts } from './components/AlertToasts'
 import { AlertsPanel } from './components/AlertsPanel'
 import { BacktestPanel } from './components/BacktestPanel'
 import { NewsFeed } from './components/NewsFeed'
+import { PortfolioPanel } from './components/PortfolioPanel'
 import { PriceChart } from './components/PriceChart'
 import { Watchlist } from './components/Watchlist'
 import { ChangeText } from './components/badges'
@@ -84,6 +85,7 @@ export default function App() {
             <NewsFeed ticker={active} />
             <div className="stack">
               <AlertsPanel tickers={allTickers} defaultTicker={active} />
+              <PortfolioPanel tickers={allTickers} defaultTicker={active} />
               {active && <BacktestPanel ticker={active} />}
             </div>
           </div>

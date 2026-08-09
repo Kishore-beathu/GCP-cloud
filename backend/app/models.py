@@ -201,6 +201,58 @@ class UserAlert(Base):
     )
 
 
+class TradeSide(str, enum.Enum):
+    """Direction of a simulated trade."""
+
+    BUY = "buy"
+    SELL = "sell"
+
+
+class Portfolio(Base):
+    """A paper-trading account. Cash is tracked here; holdings derive from trades."""
+
+    __tablename__ = "portfolios"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(64), index=True, default="local")
+    name: Mapped[str] = mapped_column(String(128))
+    starting_cash: Mapped[float] = mapped_column(Float, default=100_000.0)
+    cash: Mapped[float] = mapped_column(Float, default=100_000.0)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+    trades: Mapped[list["Trade"]] = relationship(
+        back_populates="portfolio", cascade="all, delete-orphan"
+    )
+
+
+class Trade(Base):
+    """One simulated fill. The trade log is the source of truth for positions."""
+
+    __tablename__ = "trades"
+    __table_args__ = (Index("ix_trades_portfolio_executed", "portfolio_id", "executed_at"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    portfolio_id: Mapped[int] = mapped_column(
+        ForeignKey("portfolios.id", ondelete="CASCADE"), index=True
+    )
+    ticker_id: Mapped[int] = mapped_column(
+        ForeignKey("stocks.id", ondelete="CASCADE"), index=True
+    )
+    side: Mapped[str] = mapped_column(String(8))
+    quantity: Mapped[float] = mapped_column(Float)
+    price: Mapped[float] = mapped_column(Float)
+    executed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), index=True
+    )
+    # Why the trade happened: "manual", or the signal that generated it.
+    rationale: Mapped[str | None] = mapped_column(String(255))
+
+    portfolio: Mapped[Portfolio] = relationship(back_populates="trades")
+    stock: Mapped[Stock] = relationship()
+
+
 class AlertHistory(Base):
     """One firing of an alert. Doubles as the in-app notification feed."""
 
