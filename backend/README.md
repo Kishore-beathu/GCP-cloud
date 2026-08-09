@@ -135,13 +135,47 @@ via the Supabase SQL editor or a locked-down Cloud SQL instance.
 Tables: `stocks`, `news_articles` (deduped on `(url, source)`),
 `sentiment_scores`, `stock_prices`, `user_alerts`, `alert_history`.
 
+### Connecting to Supabase
+
+1. In the Supabase dashboard, click **Connect** (top bar) and pick the
+   **Session pooler** connection string. It looks like:
+
+   ```
+   postgresql://postgres.abcdefghijkl:[YOUR-PASSWORD]@aws-0-eu-central-1.pooler.supabase.com:5432/postgres
+   ```
+
+   Prefer the session pooler (port **5432**) over the direct connection — the
+   direct host is IPv6-only on many networks — and over the transaction pooler
+   (port 6543), which this long-running API doesn't need.
+
+2. Swap the scheme for the async driver and put it in `.env`:
+
+   ```
+   DATABASE_URL=postgresql+asyncpg://postgres.abcdefghijkl:YOUR-PASSWORD@aws-0-eu-central-1.pooler.supabase.com:5432/postgres
+   ```
+
+   If the password contains special characters (`@ : / # ?`), URL-encode them
+   (`@` → `%40`, etc.).
+
+3. Start the API. With `CREATE_TABLES_ON_STARTUP=true` (the default) it
+   creates all tables and seeds the watchlist on first boot — no manual SQL
+   needed. Alternatively, paste `db/schema.sql` into the Supabase SQL editor
+   first and set `CREATE_TABLES_ON_STARTUP=false`.
+
+4. Verify: `curl localhost:8000/health` should report `"database": "ok"`, and
+   the tables appear in Supabase's Table Editor.
+
+If you do use the transaction pooler (port 6543), the app automatically
+disables asyncpg's prepared-statement cache, which otherwise breaks on pooled
+connections; `DB_STATEMENT_CACHE_SIZE` overrides that if needed.
+
 ## Tests
 
 ```bash
 .venv/bin/python -m pytest
 ```
 
-79 tests cover sentiment scoring, event classification, ingestion/dedup, alert
+84 tests cover sentiment scoring, event classification, ingestion/dedup, alert
 matching, the REST API, the WebSocket hub, backtesting, scheduler batch
 rotation, and all three integrations (SEC, Finnhub, Alpha Vantage) with mocked
 transports — no network needed.

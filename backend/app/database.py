@@ -23,12 +23,35 @@ _engine: AsyncEngine | None = None
 _session_factory: async_sessionmaker[AsyncSession] | None = None
 
 
-def _build_engine(settings: Settings) -> AsyncEngine:
+def _statement_cache_size(settings: Settings) -> int | None:
+    """Resolve the asyncpg prepared-statement cache size for this URL.
+
+    Explicit config wins. Otherwise the cache is disabled on Supabase's
+    transaction pooler (port 6543), where connections are shared per
+    transaction and server-side prepared statements leak across clients with
+    "prepared statement ... already exists" errors. The session pooler (5432)
+    and direct connections keep asyncpg's default cache.
+    """
+    if settings.db_statement_cache_size is not None:
+        return settings.db_statement_cache_size
+    if "pooler.supabase.com:6543" in settings.database_url:
+        return 0
+    return None
+
+
+def _engine_kwargs(settings: Settings) -> dict[str, object]:
     kwargs: dict[str, object] = {"echo": settings.db_echo, "future": True}
     if not settings.is_sqlite:
         # Pool tuning is meaningless for SQLite's single-file driver.
         kwargs.update(pool_size=10, max_overflow=20, pool_pre_ping=True)
-    return create_async_engine(settings.database_url, **kwargs)
+        cache_size = _statement_cache_size(settings)
+        if cache_size is not None:
+            kwargs["connect_args"] = {"statement_cache_size": cache_size}
+    return kwargs
+
+
+def _build_engine(settings: Settings) -> AsyncEngine:
+    return create_async_engine(settings.database_url, **_engine_kwargs(settings))
 
 
 def get_engine() -> AsyncEngine:

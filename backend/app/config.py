@@ -23,9 +23,15 @@ class Settings(BaseSettings):
 
     # --- Database -----------------------------------------------------------
     # Async driver required: postgresql+asyncpg://... or sqlite+aiosqlite://...
+    # Supabase: use the Session pooler URL (port 5432) and swap the scheme to
+    # postgresql+asyncpg://. See backend/README.md for the full walkthrough.
     database_url: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/pharma"
     db_echo: bool = False
     create_tables_on_startup: bool = True
+    # asyncpg prepared-statement cache. Leave unset for the sensible default:
+    # disabled automatically on Supabase's transaction pooler (port 6543),
+    # where cached prepared statements break across pooled connections.
+    db_statement_cache_size: int | None = None
 
     # --- HTTP ---------------------------------------------------------------
     cors_origins: list[str] = Field(
