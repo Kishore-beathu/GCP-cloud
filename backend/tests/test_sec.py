@@ -81,7 +81,13 @@ async def test_filing_article_fields():
     assert first.published_at.year == 2025
     # CIK is unpadded in archive URLs and the accession number loses its dashes.
     assert "/edgar/data/1682852/000168285225000101/a8k.htm" in first.url
-    assert "8.01,9.01" in first.body
+    # Item codes are expanded to their official titles so the scorer and the
+    # event classifier have words to read, not bare numbers.
+    assert "Item 8.01: Other Events" in first.body
+    assert "Item 9.01: Financial Statements and Exhibits" in first.body
+    assert "current report on a material event" in first.body
+    # A description that merely repeats the form name is dropped.
+    assert first.headline == "Moderna, Inc. filed 8-K: Other Events"
 
 
 async def test_limit_is_respected():

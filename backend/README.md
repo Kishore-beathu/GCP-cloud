@@ -56,6 +56,8 @@ universe — no code change needed.
 | POST | `/admin/ingest/finnhub` | Trigger a Finnhub news pull now |
 | POST | `/admin/ingest/prices` | Trigger an Alpha Vantage quote refresh now |
 | POST | `/admin/backfill/prices` | Load daily price history for one ticker (`?ticker=MRNA&outputsize=full`) |
+| GET | `/admin/sentiment/status` | How many stored scores came from an older model version |
+| POST | `/admin/sentiment/rescore` | Re-score stored news with the current lexicon |
 | WS | `/ws/tickers/{ticker}` | Real-time snapshot, price pushes, and alert pushes |
 
 ### WebSocket protocol
@@ -82,7 +84,22 @@ Two interchangeable backends (`SENTIMENT_BACKEND`):
   Zero downloads, so a fresh clone works offline and in CI.
 - **`finbert`** — ProsusAI/finbert. `pip install -r requirements-ml.txt` first.
 
-Both also classify each headline into a business event taxonomy
+The lexicon matches on **word boundaries**, which matters more than it sounds:
+plain substring search made "sub*miss*ion" and "com*miss*ion" fire the negative
+term "miss", so *"Regulatory submission accepted for review"* — a real catalyst
+— scored maximally negative, and *"European Commission approves…"* was dragged
+toward neutral. Negators are word-bounded too ("a*not*her", "*not*able" used to
+invert good news) and do not reach across a clause boundary, so in *"did not
+meet the endpoint, but the label expansion was approved"* the negator stays
+with the first clause.
+
+`LexiconAnalyzer.explain()` returns every term that fired, its weight and
+whether it was negated — use it when tuning the vocabulary against real
+headlines. `tests/corpus.py` holds the labelled headlines the accuracy tests
+run against; add a case whenever a real headline scores wrongly, then extend
+the lexicon until it passes.
+
+Both backends also classify each headline into a business event taxonomy
 (`fda_approval`, `clinical_trial`, `revenue`, `merger_acquisition`, `recall`,
 `partnership`, `litigation`, `exec_change`, `facility`, `analyst_rating`,
 `capital_raise`, `other`) — alerts and backtests key off these.
@@ -91,7 +108,7 @@ Both also classify each headline into a business event taxonomy
 
 | Source | What it provides | Requirement |
 |--------|------------------|-------------|
-| SEC EDGAR | 8-K/10-K/10-Q/6-K filings via the `data.sec.gov` JSON APIs | A descriptive `SEC_USER_AGENT` with a contact address (anonymous requests are rejected) |
+| SEC EDGAR | 8-K/10-K/10-Q/6-K filings via the `data.sec.gov` JSON APIs, with item codes expanded to their official titles | A descriptive `SEC_USER_AGENT` with a contact address (anonymous requests are rejected) |
 | Finnhub | Company news headlines + summaries | `FINNHUB_API_KEY` |
 | Finnhub WebSocket | **Live trade ticks** — the only real-time source | `FINNHUB_API_KEY` (plans cap concurrent symbols) |
 | Alpha Vantage | Latest quotes (`GLOBAL_QUOTE`) + daily history (`TIME_SERIES_DAILY`) | `ALPHA_VANTAGE_API_KEY` |
@@ -112,6 +129,25 @@ backtests have data on day one:
 ```bash
 curl -X POST "http://localhost:8000/admin/backfill/prices?ticker=MRNA&outputsize=full"
 ```
+
+## Re-scoring stored news
+
+Sentiment is stored, not recomputed on read, so improving the lexicon does
+nothing for news already in the database. Each `sentiment_scores` row records
+the `model_version` that produced it, which makes the stale rows identifiable:
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" localhost:8000/admin/sentiment/status
+# {"current_model": "lexicon-v2", "by_model_version": {"lexicon-v1": 412}, "stale": 412}
+
+curl -X POST -H "Authorization: Bearer $TOKEN" \
+  "localhost:8000/admin/sentiment/rescore?limit=5000"
+# {"examined": 412, "updated": 137, "unchanged": 275, "sentiment_flipped": 41}
+```
+
+Re-scoring deliberately does **not** re-fire alerts — they already fired, or
+did not, when the news arrived, and replaying months of history into a Slack
+channel would be worse than useless.
 
 ## Real-time prices
 
@@ -341,13 +377,15 @@ clients talk to this API, not to Supabase directly.
 .venv/bin/python -m pytest
 ```
 
-161 tests cover sentiment scoring, event classification, ingestion/dedup, alert
+237 tests cover sentiment scoring, event classification, ingestion/dedup, alert
 matching and delivery, the REST API, the WebSocket hub, backtesting, scheduler
 batch rotation, portfolio maths and simulation, and every data integration
 (SEC, Finnhub REST, Alpha Vantage) against mocked transports. The live price
 stream is covered end to end against a real WebSocket server on localhost.
 Authentication is covered by token-forgery attempts and a parametrised sweep
-asserting every protected route rejects anonymous callers. No network needed.
+asserting every protected route rejects anonymous callers. Sentiment accuracy is
+measured against a labelled corpus of realistic headlines rather than asserted.
+No network needed.
 
 ## Roadmap (from the build plan)
 

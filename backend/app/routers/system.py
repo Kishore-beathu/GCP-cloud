@@ -17,6 +17,7 @@ from app.integrations.finnhub_stream import finnhub_stream
 from app.integrations.sec import ingest_sec_filings
 from app.schemas import HealthResponse
 from app.security import require_auth
+from app.services.rescore import rescore_articles, stale_count
 from app.services.tickers import seed_stocks
 
 logger = logging.getLogger(__name__)
@@ -136,3 +137,34 @@ async def trigger_price_backfill(
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return {"ticker": ticker.upper(), **result}
+
+
+@router.get(
+    "/admin/sentiment/status",
+    summary="How many stored scores are stale",
+    dependencies=[Depends(require_auth)],
+)
+async def sentiment_status(db: AsyncSession = Depends(get_db)) -> dict:
+    """Compare stored scores against the current model version."""
+    return await stale_count(db)
+
+
+@router.post(
+    "/admin/sentiment/rescore",
+    summary="Re-score stored articles with the current model",
+    dependencies=[Depends(require_auth)],
+)
+async def rescore(
+    limit: int = Query(default=1000, ge=1, le=20000),
+    only_stale: bool = Query(
+        default=True, description="False re-scores everything, not just older versions"
+    ),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Apply lexicon improvements to news already in the database.
+
+    Runs inline so the caller sees the counts. Alerts are deliberately not
+    re-fired: they already fired, or did not, when the news arrived.
+    """
+    report = await rescore_articles(db, limit=limit, only_stale=only_stale)
+    return report.as_dict()

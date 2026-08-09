@@ -39,7 +39,7 @@ def test_score_bounds_and_confidence(analyzer: SentimentAnalyzer):
     result = analyzer.analyze_sentiment("FDA approves breakthrough therapy designation")
     assert -1.0 <= result.score <= 1.0
     assert 0.0 <= result.confidence <= 1.0
-    assert result.model_version == "lexicon-v1"
+    assert result.model_version == "lexicon-v2"
 
 
 def test_empty_input_is_neutral(analyzer: SentimentAnalyzer):
@@ -72,4 +72,4 @@ def test_event_classification(analyzer: SentimentAnalyzer, headline: str, expect
 
 def test_unknown_backend_falls_back_to_lexicon():
     analyzer = SentimentAnalyzer(backend="does-not-exist")
-    assert analyzer.model_version == "lexicon-v1"
+    assert analyzer.model_version == "lexicon-v2"

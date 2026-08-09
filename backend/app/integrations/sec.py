@@ -37,6 +37,62 @@ INTERESTING_FORMS = {"8-K", "10-K", "10-Q", "6-K", "20-F", "S-1", "424B4"}
 SOURCE = "sec_edgar"
 REQUEST_DELAY_SECONDS = 0.15  # keeps us under the SEC's 10 req/s ceiling
 
+# An 8-K's meaning lives in its item codes. The submissions feed gives them as
+# bare numbers ("8.01,9.01"), which carry no words for the sentiment scorer or
+# the event classifier to read — so every filing used to land as
+# neutral/other. Expanding them to their official titles turns the SEC into a
+# real signal source: "Results of Operations" reaches the earnings patterns,
+# "Completion of Acquisition" the M&A ones, "Bankruptcy" the negative lexicon.
+EIGHT_K_ITEMS: dict[str, str] = {
+    "1.01": "Entry into a Material Definitive Agreement",
+    "1.02": "Termination of a Material Definitive Agreement",
+    "1.03": "Bankruptcy or Receivership",
+    "1.05": "Material Cybersecurity Incident",
+    "2.01": "Completion of Acquisition or Disposition of Assets",
+    "2.02": "Results of Operations and Financial Condition",
+    "2.03": "Creation of a Direct Financial Obligation",
+    "2.04": "Triggering Events That Accelerate a Financial Obligation",
+    "2.05": "Costs Associated with Exit or Disposal Activities",
+    "2.06": "Material Impairments",
+    "3.01": "Notice of Delisting or Failure to Satisfy a Listing Rule",
+    "3.02": "Unregistered Sales of Equity Securities",
+    "3.03": "Material Modification to Rights of Security Holders",
+    "4.01": "Changes in Registrant's Certifying Accountant",
+    "4.02": "Non-Reliance on Previously Issued Financial Statements",
+    "5.01": "Changes in Control of Registrant",
+    "5.02": "Departure or Election of Directors or Principal Officers",
+    "5.03": "Amendments to Articles of Incorporation or Bylaws",
+    "5.07": "Submission of Matters to a Vote of Security Holders",
+    "7.01": "Regulation FD Disclosure",
+    "8.01": "Other Events",
+    "9.01": "Financial Statements and Exhibits",
+}
+
+# Forms whose very type is the signal, for the same reason.
+FORM_DESCRIPTIONS: dict[str, str] = {
+    "8-K": "current report on a material event",
+    "10-K": "annual report including full-year results",
+    "10-Q": "quarterly report including quarterly results",
+    "6-K": "foreign private issuer report of a material event",
+    "20-F": "foreign private issuer annual report",
+    "S-1": "registration statement for a securities offering",
+    "424B4": "prospectus for a completed securities offering",
+}
+
+
+def describe_items(item_codes: str) -> list[str]:
+    """Expand ``"8.01,9.01"`` into the official item titles, in order."""
+    described: list[str] = []
+    for raw in item_codes.split(","):
+        code = raw.strip()
+        if not code:
+            continue
+        # The feed sometimes prefixes the form, e.g. "Item 8.01".
+        code = code.replace("Item", "").strip()
+        title = EIGHT_K_ITEMS.get(code)
+        described.append(f"Item {code}: {title}" if title else f"Item {code}")
+    return described
+
 
 def _headers() -> dict[str, str]:
     return {
@@ -111,13 +167,31 @@ async def fetch_sec_filings(
         description = descriptions[index] if index < len(descriptions) else ""
         item_codes = items[index] if index < len(items) else ""
 
+        # Put the most meaningful words in the headline, since that is what the
+        # feed shows and what the scorer weighs first.
+        items_described = describe_items(item_codes) if item_codes else []
+        # The feed often sets primaryDocDescription to the form name itself, and
+        # "filed 8-K: 8-K" tells a reader nothing — prefer the item title then.
+        if description.strip().upper() == form.upper():
+            description = ""
+        headline_detail = description or (
+            items_described[0].split(": ", 1)[-1] if items_described else ""
+        )
+        body_parts = [
+            f"Form {form} filed {dates[index]} "
+            f"({FORM_DESCRIPTIONS.get(form, 'SEC filing')})."
+        ]
+        if items_described:
+            body_parts.append("Reported items: " + "; ".join(items_described) + ".")
+        if description and description not in headline_detail:
+            body_parts.append(description)
+
         articles.append(
             RawArticle(
                 ticker=ticker,
                 headline=f"{company} filed {form}"
-                + (f": {description}" if description else ""),
-                body=f"Form {form} filed {dates[index]}."
-                + (f" Reported items: {item_codes}." if item_codes else ""),
+                + (f": {headline_detail}" if headline_detail else ""),
+                body=" ".join(body_parts),
                 url=ARCHIVE_URL.format(
                     cik=str(int(cik)), accession=accession, document=document
                 ),

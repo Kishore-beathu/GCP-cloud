@@ -53,40 +53,188 @@ class EventResult:
 
 # Weights are hand-tuned on pharma/biotech headlines: regulatory and trial
 # outcomes move these stocks far more than generic business language.
+#
+# Keys are regex fragments, matched with a leading word boundary. Write stems as
+# ``approv\w*`` to catch approve/approves/approved/approval in one entry. The
+# boundary matters: plain substring search made "sub[miss]ion" and
+# "com[miss]ion" — two of the most common phrases in positive regulatory news —
+# score as the negative term "miss".
 _POSITIVE_TERMS: dict[str, float] = {
-    "approval": 1.0, "approves": 1.0, "approved": 1.0, "clearance": 0.9,
-    "breakthrough": 0.9, "granted": 0.7, "authorisation": 0.8, "authorization": 0.8,
-    "beats": 0.9, "beat": 0.8, "exceeds": 0.8, "surpassed": 0.8, "record": 0.6,
-    "growth": 0.6, "profit": 0.6, "upgrade": 0.9, "upgraded": 0.9, "outperform": 0.8,
-    "raises guidance": 1.0, "raised guidance": 1.0, "positive": 0.6, "success": 0.8,
-    "successful": 0.8, "wins": 0.8, "win": 0.6, "awarded": 0.7, "expansion": 0.6,
-    "partnership": 0.6, "collaboration": 0.5, "acquisition": 0.5, "milestone": 0.6,
-    "orphan drug": 0.7, "fast track": 0.8, "priority review": 0.8, "met primary": 1.0,
-    "statistically significant": 0.9, "surge": 0.7, "rally": 0.6, "strong demand": 0.7,
+    # --- Regulatory outcomes: the biggest movers in this sector -------------
+    r"approv\w*": 1.0,
+    # Inflections only — bare "clear" is too common in ordinary prose
+    # ("it is clear that", "unclear") to carry a regulatory signal.
+    r"clear(?:s|ed|ance)\b": 0.9,
+    r"authoris\w*": 0.85,
+    r"authoriz\w*": 0.85,
+    r"breakthrough therapy": 1.0,
+    r"breakthrough": 0.85,
+    r"accelerated approval": 1.0,
+    r"priority review": 0.9,
+    r"fast track": 0.85,
+    r"orphan drug": 0.8,
+    r"rare pediatric disease": 0.8,
+    r"designation": 0.7,
+    r"positive opinion": 1.0,
+    r"recommend\w* (?:for )?approval": 1.0,
+    r"(?:submission|filing|application) accepted": 0.95,
+    r"accepted for (?:review|filing)": 0.95,
+    r"label expansion": 0.9,
+    r"expanded (?:label|indication)": 0.9,
+    r"grant(?:s|ed)": 0.7,
+    r"receiv\w* (?:approval|clearance|authoris|authoriz)": 1.0,
+    r"ce mark": 0.7,
+    r"exclusivity": 0.7,
+    r"patent (?:upheld|granted|win|victory)": 0.9,
+    # --- Clinical readouts --------------------------------------------------
+    r"met (?:its |the |all |both )*(?:co-)?primary": 1.0,
+    r"(?:co-)?primary endpoints? (?:was |were |been )?met": 1.0,
+    r"achiev\w* (?:its |the )?primary": 1.0,
+    r"statistically significant": 0.9,
+    r"clinically meaningful": 0.85,
+    r"well[- ]tolerated": 0.8,
+    r"favou?rable safety": 0.85,
+    r"durable (?:response|remission|benefit)": 0.8,
+    r"positive (?:topline|data|results?|interim|readout)": 0.95,
+    r"survival benefit": 0.9,
+    r"superior(?:ity)? to": 0.85,
+    r"first patient dosed": 0.6,
+    r"(?:enrolment|enrollment) complete": 0.6,
+    # --- Commercial and financial ------------------------------------------
+    r"beat(?:s|ing)?\b": 0.85,
+    r"exceed\w*": 0.8,
+    r"surpass\w*": 0.8,
+    r"rais(?:es|ed) (?:full[- ]year )?(?:guidance|outlook|forecast)": 1.0,
+    r"lift(?:s|ed) (?:guidance|outlook)": 1.0,
+    r"record (?:revenue|sales|quarter|profit)": 0.85,
+    r"record": 0.5,
+    r"growth": 0.55,
+    r"profit\w*": 0.6,
+    r"upgrad\w*": 0.9,
+    r"outperform\w*": 0.8,
+    r"(?:share )?(?:buyback|repurchase)": 0.8,
+    r"(?:rais\w*|increas\w*) (?:the )?dividend": 0.8,
+    r"reimbursement": 0.7,
+    r"strong (?:demand|results?|quarter|sales|growth)": 0.8,
+    r"robust": 0.6,
+    r"(?:milestone|upfront) payment": 0.75,
+    r"royalt\w*": 0.5,
+    r"licens\w*": 0.55,
+    r"partnership": 0.6,
+    r"collaborat\w*": 0.55,
+    r"acquisition": 0.5,
+    r"expansion": 0.6,
+    r"award\w*": 0.7,
+    r"win(?:s|ning)?\b": 0.7,
+    r"success\w*": 0.8,
+    r"secur(?:es|ed)": 0.6,
+    r"surge\w*": 0.7,
+    r"rall(?:y|ies)": 0.6,
 }
 
 _NEGATIVE_TERMS: dict[str, float] = {
-    "rejection": 1.0, "rejects": 1.0, "rejected": 1.0, "denied": 0.9,
-    "complete response letter": 1.0, "warning letter": 1.0, "form 483": 0.9,
-    "recall": 1.0, "recalled": 1.0, "withdraw": 0.8, "withdrawn": 0.8,
-    "misses": 0.9, "missed": 0.8, "miss": 0.7, "decline": 0.6, "declines": 0.6,
-    "downgrade": 0.9, "downgraded": 0.9, "underperform": 0.8, "loss": 0.6,
-    "losses": 0.6, "cuts guidance": 1.0, "cut guidance": 1.0, "lawsuit": 0.7,
-    "litigation": 0.6, "investigation": 0.7, "probe": 0.6, "failed": 1.0,
-    "failure": 0.9, "halt": 0.8, "halted": 0.8, "discontinued": 0.8,
-    "layoffs": 0.7, "restructuring": 0.5, "bankruptcy": 1.0, "delay": 0.7,
-    "delayed": 0.7, "shortage": 0.6, "did not meet": 1.0, "plunge": 0.8,
-    "slump": 0.7, "resigns": 0.6, "steps down": 0.6,
+    # --- Regulatory setbacks ------------------------------------------------
+    r"reject\w*": 1.0,
+    r"deni(?:es|ed|al)": 0.9,
+    r"complete response letter": 1.0,
+    r"warning letter": 1.0,
+    r"form 483": 0.9,
+    r"consent decree": 0.9,
+    r"import alert": 0.85,
+    r"clinical hold": 1.0,
+    r"recall\w*": 1.0,
+    r"withdraw\w*": 0.8,
+    r"negative opinion": 1.0,
+    # --- Clinical failures --------------------------------------------------
+    r"did not meet": 1.0,
+    r"fail(?:s|ed|ure)?\b": 0.95,
+    r"miss(?:es|ed)?\b": 0.8,
+    r"discontinu\w*": 0.8,
+    r"terminat\w*": 0.7,
+    r"halt(?:s|ed)?\b": 0.8,
+    r"safety (?:concern|signal|issue)": 0.9,
+    r"setback": 0.85,
+    r"disappointing": 0.8,
+    # --- Commercial and financial ------------------------------------------
+    r"declin(?:e|es|ed|ing)": 0.6,
+    r"downgrad\w*": 0.9,
+    r"underperform\w*": 0.8,
+    r"loss(?:es)?\b": 0.6,
+    r"cut(?:s)? (?:guidance|outlook|forecast)": 1.0,
+    r"low(?:ers|ered) (?:guidance|outlook|forecast)": 1.0,
+    # Same events with the noun first: "guidance cut", "outlook lowered".
+    r"(?:guidance|outlook|forecast) (?:was |were )?(?:cut|lowered|reduced|trimmed)": 1.0,
+    # A negator governs what FOLLOWS it, so the window-based check cannot catch
+    # "approval was not granted" — the positive noun sits before the negator.
+    # These spell out the common regulatory refusals directly.
+    r"not (?:be |been )?(?:grant|approv|clear|authoris|authoriz)\w*": 1.0,
+    r"declin(?:es|ed) to (?:approve|grant|clear)": 1.0,
+    r"lawsuit": 0.7,
+    r"litigation": 0.6,
+    r"investigation": 0.7,
+    r"probe": 0.6,
+    r"layoffs?": 0.7,
+    r"restructuring": 0.5,
+    r"bankruptcy": 1.0,
+    r"going concern": 0.9,
+    r"delist\w*": 0.9,
+    r"dilution": 0.6,
+    r"delay\w*": 0.7,
+    r"shortage": 0.6,
+    r"plunge\w*": 0.8,
+    r"slump\w*": 0.7,
+    r"resign\w*": 0.6,
+    r"steps down": 0.6,
 }
 
-# Negators flip the polarity of the term that follows them within a short window.
-_NEGATORS = ("not", "no", "never", "fails to", "failed to", "without", "denies")
+
+def _compile(terms: dict[str, float]) -> tuple[tuple[re.Pattern[str], float], ...]:
+    """Compile each term with a leading word boundary, longest phrase first.
+
+    Ordering matters for reporting only — every pattern is evaluated — but it
+    keeps the more specific phrase first when a human reads a match trace.
+    """
+    return tuple(
+        (re.compile(r"\b" + fragment, re.IGNORECASE), weight)
+        for fragment, weight in sorted(terms.items(), key=lambda kv: -len(kv[0]))
+    )
+
+
+_POSITIVE_PATTERNS = _compile(_POSITIVE_TERMS)
+_NEGATIVE_PATTERNS = _compile(_NEGATIVE_TERMS)
+
+# Negators flip the polarity of the term that follows them. Word-bounded: a bare
+# "not" substring also lives inside "another", "notable" and "nothing", which
+# silently inverted perfectly good news.
+_NEGATOR_RE = re.compile(
+    r"\b(?:not|no|never|without|cannot|denie[sd]|"
+    r"fail(?:s|ed)? to|unable to|declin(?:es|ed) to)\b",
+    re.IGNORECASE,
+)
+
+# Negation does not reach across a clause boundary: in "did not meet the
+# endpoint, but approval was granted" the negator belongs to the first clause.
+_CLAUSE_BREAKS = (";", ",", " but ", " however", " although ", " while ", " despite ")
+
+# How far back a negator may sit, in characters.
+_NEGATION_WINDOW = 40
+
+# One term repeated many times should corroborate, not dominate.
+_MAX_OCCURRENCES_PER_TERM = 3
 
 _EVENT_PATTERNS: dict[EventType, tuple[str, ...]] = {
     EventType.FDA_APPROVAL: (
         r"\bfda\b", r"\bema\b", r"\bmhra\b", r"\bapprov", r"\bclearance\b",
         r"\bcomplete response letter\b", r"\bpdufa\b", r"\bmarketing authorisation\b",
         r"\bmarketing authorization\b", r"\b510\(k\)\b", r"\bce mark\b",
+        # Regulatory milestones that precede an approval decision: a filing
+        # acceptance or a special designation is a catalyst in its own right.
+        r"\bregulatory submission\b", r"\b(?:submission|application|filing) accepted\b",
+        r"\baccepted for (?:review|filing)\b", r"\bmarketing application\b",
+        r"\b(?:bla|nda|snda|sbla|maa|anda)\b", r"\bdesignation\b",
+        r"\bbreakthrough therapy\b", r"\bpriority review\b", r"\bfast track\b",
+        r"\borphan drug\b", r"\bchmp\b", r"\b(?:positive|negative) opinion\b",
+        r"\blabel expansion\b", r"\bregulatory\b",
     ),
     EventType.CLINICAL_TRIAL: (
         r"\bphase (?:1|2|3|i{1,3})\b", r"\btrial\b", r"\bstudy\b", r"\bendpoint\b",
@@ -95,6 +243,12 @@ _EVENT_PATTERNS: dict[EventType, tuple[str, ...]] = {
     EventType.REVENUE: (
         r"\bearnings\b", r"\brevenue\b", r"\bguidance\b", r"\bquarterly results\b",
         r"\bq[1-4] (?:20\d\d|results)\b", r"\beps\b", r"\bfull[- ]year results\b",
+        # SEC 8-K item 2.02 and the periodic reports arrive with this wording.
+        r"\bresults of operations\b", r"\bfinancial condition\b",
+        r"\bannual report\b", r"\bquarterly report\b", r"\boutlook\b",
+        # Shareholder returns are financial events, not regulatory ones — a
+        # board "approving" a buyback otherwise matched the FDA pattern.
+        r"\b(?:share )?(?:buyback|repurchase)\b", r"\bdividend\b",
     ),
     EventType.MERGER_ACQUISITION: (
         r"\bacquis", r"\bacquire", r"\bmerger\b", r"\bmerges\b", r"\btakeover\b",
@@ -111,10 +265,15 @@ _EVENT_PATTERNS: dict[EventType, tuple[str, ...]] = {
     EventType.PARTNERSHIP: (
         r"\bpartnership\b", r"\bcollaborat", r"\blicens", r"\bjoint venture\b",
         r"\bsupply agreement\b", r"\bcdmo (?:deal|agreement|contract)\b",
+        # SEC 8-K item 1.01 — how most deals are first disclosed.
+        r"\bmaterial definitive agreement\b", r"\bupfront payment\b",
+        r"\bmilestone payment\b",
     ),
     EventType.EXEC_CHANGE: (
         r"\bceo\b", r"\bcfo\b", r"\bcso\b", r"\bchief executive\b", r"\bappoints\b",
         r"\bsteps down\b", r"\bresigns\b", r"\bnames? new\b",
+        # SEC 8-K item 5.02
+        r"\bdeparture or election of directors\b", r"\bprincipal officers\b",
     ),
     EventType.FACILITY: (
         r"\bfacility\b", r"\bplant\b", r"\bmanufacturing site\b", r"\bcapacity expansion\b",
@@ -127,6 +286,9 @@ _EVENT_PATTERNS: dict[EventType, tuple[str, ...]] = {
     EventType.CAPITAL_RAISE: (
         r"\boffering\b", r"\bipo\b", r"\bseries [a-e]\b", r"\bfunding round\b",
         r"\braises \$", r"\bconvertible notes\b", r"\bprivate placement\b",
+        # SEC forms S-1/424B4 and 8-K item 3.02
+        r"\bregistration statement\b", r"\bprospectus\b",
+        r"\bunregistered sales of equity\b",
     ),
 }
 
@@ -144,36 +306,88 @@ def _prepare(headline: str, body: str | None) -> str:
 
 
 def _is_negated(text: str, match_start: int) -> bool:
-    """True when a negator appears in the ~30 characters before a matched term."""
-    window = text[max(0, match_start - 30) : match_start]
-    return any(negator in window for negator in _NEGATORS)
+    """True when a negator governs the term starting at ``match_start``.
+
+    The lookback stops at the nearest clause boundary, so a negator belonging to
+    an earlier clause cannot invert a later one.
+    """
+    window = text[max(0, match_start - _NEGATION_WINDOW) : match_start]
+    for separator in _CLAUSE_BREAKS:
+        index = window.rfind(separator)
+        if index != -1:
+            window = window[index + len(separator) :]
+    return _NEGATOR_RE.search(window) is not None
 
 
 class LexiconAnalyzer:
     """Keyword scorer tuned for pharma and life-sciences headlines."""
 
-    model_version = "lexicon-v1"
+    model_version = "lexicon-v2"
+
+    @staticmethod
+    def _tally(text: str) -> tuple[float, float, int]:
+        """Sum positive and negative weight over every occurrence in ``text``.
+
+        Each occurrence is negation-checked on its own, so "did not meet the
+        primary endpoint, but the label expansion was approved" books the first
+        clause negative and the second positive.
+        """
+        positive = negative = 0.0
+        hits = 0
+
+        for patterns, is_positive in (
+            (_POSITIVE_PATTERNS, True),
+            (_NEGATIVE_PATTERNS, False),
+        ):
+            for pattern, weight in patterns:
+                occurrences = 0
+                for match in pattern.finditer(text):
+                    occurrences += 1
+                    if occurrences > _MAX_OCCURRENCES_PER_TERM:
+                        break
+                    hits += 1
+                    # A negated positive reads as negative, and vice versa.
+                    if is_positive != _is_negated(text, match.start()):
+                        positive += weight
+                    else:
+                        negative += weight
+
+        return positive, negative, hits
+
+    def explain(self, headline: str, body: str | None = None) -> dict:
+        """Which terms fired and how — for tuning the lexicon against real news."""
+        text = _prepare(headline, body).lower()
+        matched: list[dict] = []
+        for patterns, is_positive in (
+            (_POSITIVE_PATTERNS, True),
+            (_NEGATIVE_PATTERNS, False),
+        ):
+            for pattern, weight in patterns:
+                for match in pattern.finditer(text):
+                    negated = _is_negated(text, match.start())
+                    matched.append(
+                        {
+                            "term": pattern.pattern.lstrip("\\b"),
+                            "matched_text": match.group(0),
+                            "weight": weight,
+                            "polarity": "positive" if is_positive != negated else "negative",
+                            "negated": negated,
+                        }
+                    )
+        result = self.score(headline, body)
+        return {
+            "sentiment": result.sentiment.value,
+            "score": result.score,
+            "confidence": result.confidence,
+            "matches": matched,
+        }
 
     def score(self, headline: str, body: str | None = None) -> SentimentResult:
         text = _prepare(headline, body).lower()
         if not text:
             return SentimentResult(Sentiment.NEUTRAL, 0.0, 0.0, self.model_version)
 
-        positive = negative = 0.0
-        hits = 0
-        for terms, is_positive in ((_POSITIVE_TERMS, True), (_NEGATIVE_TERMS, False)):
-            for term, weight in terms.items():
-                start = text.find(term)
-                if start == -1:
-                    continue
-                hits += 1
-                # A negated positive reads as negative, and vice versa.
-                polarity_positive = is_positive != _is_negated(text, start)
-                if polarity_positive:
-                    positive += weight
-                else:
-                    negative += weight
-
+        positive, negative, hits = self._tally(text)
         total = positive + negative
         if total == 0:
             return SentimentResult(Sentiment.NEUTRAL, 0.0, 0.25, self.model_version)
