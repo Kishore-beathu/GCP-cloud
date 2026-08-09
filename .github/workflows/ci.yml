@@ -1,8 +1,10 @@
 name: CI
 
 on:
+  # Branch pushes are covered by the pull_request trigger; listing every branch
+  # here too would run the whole suite twice for each push to an open PR.
   push:
-    branches: ["**"]
+    branches: [main, master]
   pull_request:
 
 # A new push to the same branch makes an in-flight run redundant.
