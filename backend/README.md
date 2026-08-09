@@ -92,12 +92,19 @@ Both also classify each headline into a business event taxonomy
 | Source | What it provides | Requirement |
 |--------|------------------|-------------|
 | SEC EDGAR | 8-K/10-K/10-Q/6-K filings via the `data.sec.gov` JSON APIs | A descriptive `SEC_USER_AGENT` with a contact address (anonymous requests are rejected) |
-| Finnhub | Company news headlines + summaries | `FINNHUB_API_KEY` (free tier: ~60 calls/min) |
-| Alpha Vantage | Latest quotes (`GLOBAL_QUOTE`) + daily history (`TIME_SERIES_DAILY`) | `ALPHA_VANTAGE_API_KEY` (free tier: 5 calls/min) |
+| Finnhub | Company news headlines + summaries | `FINNHUB_API_KEY` |
+| Finnhub WebSocket | **Live trade ticks** — the only real-time source | `FINNHUB_API_KEY` (plans cap concurrent symbols) |
+| Alpha Vantage | Latest quotes (`GLOBAL_QUOTE`) + daily history (`TIME_SERIES_DAILY`) | `ALPHA_VANTAGE_API_KEY` |
 
 Missing keys degrade gracefully: the source logs a skip and everything else
 keeps running. Rate limits are respected with inter-call delays, and both APIs'
 throttle responses stop the current batch cleanly instead of erroring.
+
+**Check your plans' actual quotas before trusting the defaults.** Alpha
+Vantage in particular has run free tiers as tight as a few dozen requests per
+*day*, which the default 60-second quote job would exhaust in minutes. If that
+is your plan, raise `ALPHA_VANTAGE_INTERVAL_SECONDS` (3600 or more) or leave
+quotes to on-demand backfills — no code change needed.
 
 After adding an Alpha Vantage key, backfill history for your main tickers so
 backtests have data on day one:
@@ -106,6 +113,31 @@ backtests have data on day one:
 curl -X POST "http://localhost:8000/admin/backfill/prices?ticker=MRNA&outputsize=full"
 ```
 
+## Real-time prices
+
+Alpha Vantage is REST-only, so its prices are polled. **Finnhub's WebSocket is
+the only true streaming source**, and the backend keeps one connection to it
+(`app/integrations/finnhub_stream.py`) feeding trade ticks straight into the
+browser WebSocket. It starts automatically when `FINNHUB_API_KEY` is set.
+
+Four behaviours make it safe to leave running:
+
+- **Coalescing** — a liquid symbol can print many trades a second, so ticks
+  update an in-memory map and flush at most one message per symbol per second.
+- **Demand-driven subscriptions** — only tickers someone is actually watching
+  are subscribed upstream, re-checked every few seconds and capped at
+  `FINNHUB_STREAM_MAX_SYMBOLS` (plans limit concurrent symbols). Closing the
+  last browser tab on a ticker releases its slot.
+- **No double-pushing** — symbols carried by the stream are skipped by the
+  polling job, so the UI never flickers between a live trade price and an older
+  stored close.
+- **Self-healing** — disconnects reconnect with exponential backoff, and a
+  stream outage silently falls back to polled prices.
+
+`GET /jobs/status` reports it under `price_stream` (connected, subscribed
+symbols, live price count). Set `FINNHUB_STREAM_ENABLED=false` to turn it off
+and rely on polling alone.
+
 ## Background jobs (APScheduler)
 
 | Job | Default cadence | What it does |
@@ -113,7 +145,7 @@ curl -X POST "http://localhost:8000/admin/backfill/prices?ticker=MRNA&outputsize
 | SEC EDGAR ingestion | every 30 min | Rotates through the watchlist in batches, pulls recent filings, scores and stores them |
 | Finnhub news ingestion* | every 5 min | Rotates 50-ticker batches through `/company-news`, deduped on URL |
 | Alpha Vantage quote refresh* | every 60 s | Refreshes latest quotes; tickers with live WebSocket subscribers jump the queue |
-| WebSocket price push | every 10 s | Pushes the latest close + % change to subscribed clients |
+| WebSocket price push | every 10 s | Pushes the latest stored close to subscribed clients — **skipping symbols the live stream already covers** |
 | Retention cleanup | weekly | Deletes news/prices older than `DATA_RETENTION_DAYS` |
 
 \* Only registered when the corresponding API key is configured, so
@@ -246,10 +278,12 @@ clients talk to this API, not to Supabase directly.
 .venv/bin/python -m pytest
 ```
 
-118 tests cover sentiment scoring, event classification, ingestion/dedup, alert
+128 tests cover sentiment scoring, event classification, ingestion/dedup, alert
 matching and delivery, the REST API, the WebSocket hub, backtesting, scheduler
-batch rotation, portfolio maths and simulation, and all three data integrations
-(SEC, Finnhub, Alpha Vantage) with mocked transports — no network needed.
+batch rotation, portfolio maths and simulation, and every data integration
+(SEC, Finnhub REST, Alpha Vantage) against mocked transports. The live price
+stream is covered end to end against a real WebSocket server on localhost —
+still no network needed.
 
 ## Roadmap (from the build plan)
 

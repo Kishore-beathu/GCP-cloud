@@ -160,7 +160,16 @@ async def test_backtest_unknown_ticker_404(client, seeded_stocks):
 async def test_jobs_status_when_scheduler_disabled(client):
     response = await client.get("/jobs/status")
     assert response.status_code == 200
-    assert response.json() == {"running": False, "jobs": []}
+    body = response.json()
+    assert body["running"] is False
+    assert body["jobs"] == []
+    # The live stream reports itself even when it is not running.
+    assert body["price_stream"] == {
+        "enabled": False,
+        "connected": False,
+        "subscribed": [],
+        "live_prices": 0,
+    }
 
 
 async def test_price_history_endpoint(client, db, seeded_stocks):

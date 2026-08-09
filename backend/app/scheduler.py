@@ -17,6 +17,7 @@ from app.config import get_settings
 from app.database import get_session_factory
 from app.integrations.alpha_vantage import update_quotes
 from app.integrations.finnhub import ingest_finnhub_news
+from app.integrations.finnhub_stream import finnhub_stream
 from app.integrations.sec import ingest_sec_filings
 from app.models import NewsArticle, Stock, StockPrice
 from app.services.streams import ticker_hub
@@ -119,10 +120,12 @@ async def quote_refresh_job() -> None:
 async def price_push_job() -> None:
     """Push the latest stored close to every subscribed WebSocket client.
 
-    Week 1 replays what ingestion has already written. Week 2 swaps the source
-    for a live Alpha Vantage quote; the push path stays identical.
+    Symbols carried by the Finnhub trade stream are skipped: replaying a stored
+    close over a live trade price would make the UI flicker between two
+    different numbers. This job is the fallback for everything else — symbols
+    outside the stream's cap, or whenever the stream is down.
     """
-    tickers = ticker_hub.subscribed_tickers()
+    tickers = ticker_hub.subscribed_tickers() - finnhub_stream.live_symbols()
     if not tickers:
         return
 

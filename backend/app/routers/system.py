@@ -13,6 +13,7 @@ from app.config import get_settings
 from app.database import get_db, get_session_factory
 from app.integrations.alpha_vantage import backfill_daily, update_quotes
 from app.integrations.finnhub import ingest_finnhub_news
+from app.integrations.finnhub_stream import finnhub_stream
 from app.integrations.sec import ingest_sec_filings
 from app.schemas import HealthResponse
 from app.services.tickers import seed_stocks
@@ -40,11 +41,11 @@ async def health(db: AsyncSession = Depends(get_db)) -> HealthResponse:
     )
 
 
-@router.get("/jobs/status", summary="Scheduled job status")
+@router.get("/jobs/status", summary="Scheduled job and live-stream status")
 async def jobs_status() -> dict:
     from app.scheduler import job_status
 
-    return job_status()
+    return {**job_status(), "price_stream": finnhub_stream.status()}
 
 
 @router.post("/admin/seed", summary="Seed the stock universe")

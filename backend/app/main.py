@@ -11,6 +11,7 @@ from fastapi.responses import JSONResponse
 
 from app.config import get_settings
 from app.database import create_all, dispose_engine, get_session_factory
+from app.integrations.finnhub_stream import finnhub_stream
 from app.logging_config import configure_logging
 from app.routers import alerts, backtest, news, portfolios, stocks, system, ws
 from app.scheduler import shutdown_scheduler, start_scheduler
@@ -32,9 +33,11 @@ async def lifespan(app: FastAPI):
             await seed_stocks(session)
 
     start_scheduler()
+    await finnhub_stream.start()
     try:
         yield
     finally:
+        await finnhub_stream.stop()
         shutdown_scheduler()
         await dispose_engine()
         logger.info("Shutdown complete")

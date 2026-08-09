@@ -70,10 +70,28 @@ class Settings(BaseSettings):
     finnhub_batch_size: int = 50
     finnhub_lookback_days: int = 3
 
-    # Alpha Vantage quotes. The free tier is 5 calls/min, so the default batch
-    # matches it exactly; paid tiers can raise the batch size and cadence.
+    # Alpha Vantage quotes. Alpha Vantage is REST-only — there is no streaming
+    # API — so "live" prices from it mean polling. Check your plan's actual
+    # quota before lowering the interval: free tiers have been as tight as a
+    # few dozen requests per *day*, which a 60-second job would exhaust in
+    # minutes. On such a plan, raise the interval to hourly (3600) or leave
+    # quotes to on-demand backfills.
     alpha_vantage_interval_seconds: int = 60
     alpha_vantage_batch_size: int = 5
+
+    # --- Finnhub live trade stream ------------------------------------------
+    # The one true real-time source: a WebSocket carrying trade ticks. Only
+    # runs when FINNHUB_API_KEY is set.
+    finnhub_stream_enabled: bool = True
+    # Plans cap concurrent symbol subscriptions; only tickers with a live
+    # viewer are subscribed, most-watched first.
+    finnhub_stream_max_symbols: int = 50
+    # Ticks are coalesced to at most one browser message per symbol per flush.
+    finnhub_stream_flush_seconds: float = 1.0
+    # How often the subscription set is reconciled against viewer demand.
+    finnhub_stream_resync_seconds: float = 5.0
+    finnhub_stream_backoff_seconds: float = 2.0
+    finnhub_stream_max_backoff_seconds: float = 60.0
 
     # --- Notification channels ----------------------------------------------
     # Each channel activates only when configured; alerts naming an

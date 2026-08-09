@@ -113,6 +113,8 @@ export interface PriceUpdate {
   price: number | null
   change: number | null
   timestamp: string
+  // 'stream' = a live Finnhub trade tick; absent = a polled stored close.
+  source?: 'stream'
 }
 
 export interface AlertPush {
