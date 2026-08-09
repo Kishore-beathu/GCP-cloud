@@ -88,6 +88,29 @@ async def create_all() -> None:
 
     async with get_engine().begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+    await enable_row_level_security()
+
+
+async def enable_row_level_security() -> None:
+    """Enable RLS on every table (PostgreSQL only).
+
+    Managed platforms like Supabase expose the ``public`` schema through an
+    auto-generated REST API keyed by a publishable token. With RLS off, that
+    token could read and write these tables. Enabling RLS with no policies
+    denies that path entirely, while this app is unaffected: it connects as
+    the table owner over a direct Postgres connection, and owners bypass RLS
+    unless FORCE is set.
+    """
+    from sqlalchemy import text
+
+    if get_settings().is_sqlite:
+        return  # SQLite has no RLS and no exposed REST surface.
+
+    async with get_engine().begin() as conn:
+        for table in Base.metadata.sorted_tables:
+            await conn.execute(
+                text(f'ALTER TABLE "{table.name}" ENABLE ROW LEVEL SECURITY')
+            )
 
 
 async def dispose_engine() -> None:

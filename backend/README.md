@@ -169,6 +169,15 @@ If you do use the transaction pooler (port 6543), the app automatically
 disables asyncpg's prepared-statement cache, which otherwise breaks on pooled
 connections; `DB_STATEMENT_CACHE_SIZE` overrides that if needed.
 
+**Security note:** Supabase auto-exposes every `public`-schema table through
+its REST API (`/rest/v1/...`), keyed by the project's publishable key. The app
+enables Row Level Security on all of its tables at startup (and `schema.sql`
+does the same), which blocks that path — with no policies defined, the
+publishable key can neither read nor write anything. The backend itself is
+unaffected because it connects as the table owner over a direct Postgres
+connection. Ignore the Supabase dashboard's Next.js/`supabase-js` quickstart:
+clients talk to this API, not to Supabase directly.
+
 ## Tests
 
 ```bash

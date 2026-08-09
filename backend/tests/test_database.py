@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import pytest
+
 from app.config import Settings
-from app.database import _engine_kwargs, _statement_cache_size
+from app.database import _engine_kwargs, _statement_cache_size, enable_row_level_security
 
 
 def _settings(**overrides) -> Settings:
@@ -47,3 +49,9 @@ def test_plain_postgres_gets_pool_tuning_only():
     kwargs = _engine_kwargs(settings)
     assert kwargs["pool_size"] == 10
     assert "connect_args" not in kwargs
+
+
+@pytest.mark.asyncio
+async def test_enable_rls_is_noop_on_sqlite():
+    """On SQLite (tests, local dev) the RLS step must silently do nothing."""
+    await enable_row_level_security()

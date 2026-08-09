@@ -111,4 +111,16 @@ CREATE TABLE IF NOT EXISTS alert_history (
 
 CREATE INDEX IF NOT EXISTS ix_alert_history_triggered ON alert_history (triggered_at DESC);
 
+-- ------------------------------------------------------ row level security --
+-- Supabase (and similar platforms) expose the public schema through an
+-- auto-generated REST API keyed by a publishable token. Enabling RLS with no
+-- policies blocks that path. The backend is unaffected: it connects as the
+-- table owner over a direct Postgres connection, and owners bypass RLS.
+ALTER TABLE stocks           ENABLE ROW LEVEL SECURITY;
+ALTER TABLE news_articles    ENABLE ROW LEVEL SECURITY;
+ALTER TABLE sentiment_scores ENABLE ROW LEVEL SECURITY;
+ALTER TABLE stock_prices     ENABLE ROW LEVEL SECURITY;
+ALTER TABLE user_alerts      ENABLE ROW LEVEL SECURITY;
+ALTER TABLE alert_history    ENABLE ROW LEVEL SECURITY;
+
 COMMIT;
