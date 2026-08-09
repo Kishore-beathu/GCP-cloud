@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -44,6 +46,28 @@ async def get_stock_or_404(db: AsyncSession, ticker: str) -> Stock:
             status_code=status.HTTP_404_NOT_FOUND, detail=f"Ticker {symbol} is not tracked"
         )
     return stock
+
+
+@router.get(
+    "/{ticker}/prices",
+    response_model=list[PriceOut],
+    summary="Daily price history, oldest first",
+)
+async def get_price_history(
+    ticker: str,
+    days: int = Query(default=90, ge=1, le=1825),
+    db: AsyncSession = Depends(get_db),
+) -> list[StockPrice]:
+    stock = await get_stock_or_404(db, ticker)
+    since = datetime.now(timezone.utc) - timedelta(days=days)
+    rows = (
+        await db.execute(
+            select(StockPrice)
+            .where(StockPrice.ticker_id == stock.id, StockPrice.price_date >= since)
+            .order_by(StockPrice.price_date)
+        )
+    ).scalars()
+    return list(rows)
 
 
 @router.get("/{ticker}", response_model=StockDetail, summary="Stock detail with latest price")

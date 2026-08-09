@@ -161,3 +161,29 @@ async def test_jobs_status_when_scheduler_disabled(client):
     response = await client.get("/jobs/status")
     assert response.status_code == 200
     assert response.json() == {"running": False, "jobs": []}
+
+
+async def test_price_history_endpoint(client, db, seeded_stocks):
+    from datetime import datetime, timedelta, timezone
+
+    from app.models import StockPrice
+
+    mrna = seeded_stocks[0]
+    now = datetime.now(timezone.utc)
+    for offset, close in enumerate([100.0, 101.0, 102.0]):
+        db.add(
+            StockPrice(
+                ticker_id=mrna.id,
+                close=close,
+                price_date=now - timedelta(days=2 - offset),
+                source="test",
+            )
+        )
+    await db.commit()
+
+    response = await client.get("/stocks/MRNA/prices", params={"days": 30})
+    assert response.status_code == 200
+    closes = [row["close"] for row in response.json()]
+    assert closes == [100.0, 101.0, 102.0]  # oldest first
+
+    assert (await client.get("/stocks/NOSUCH/prices")).status_code == 404

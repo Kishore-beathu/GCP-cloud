@@ -34,11 +34,14 @@ class Settings(BaseSettings):
     db_statement_cache_size: int | None = None
 
     # --- HTTP ---------------------------------------------------------------
+    # Vite dev server (3000/5173), vite preview (4173), and a spare (3001) —
+    # in both localhost and 127.0.0.1 spellings, which browsers treat as
+    # different origins. Production origins come from the CORS_ORIGINS env var.
     cors_origins: list[str] = Field(
         default_factory=lambda: [
-            "http://localhost:3000",
-            "http://localhost:3001",
-            "http://localhost:5173",
+            f"http://{host}:{port}"
+            for host in ("localhost", "127.0.0.1")
+            for port in (3000, 3001, 4173, 5173)
         ]
     )
 

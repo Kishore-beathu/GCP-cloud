@@ -26,3 +26,8 @@ build/
 .vscode/
 .idea/
 .DS_Store
+
+# Frontend/desktop build outputs
+frontend/dist/
+desktop/renderer/
+desktop/release/
