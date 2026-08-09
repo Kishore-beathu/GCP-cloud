@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
@@ -13,8 +13,9 @@ from app.config import get_settings
 from app.database import create_all, dispose_engine, get_session_factory
 from app.integrations.finnhub_stream import finnhub_stream
 from app.logging_config import configure_logging
-from app.routers import alerts, backtest, news, portfolios, stocks, system, ws
+from app.routers import alerts, auth, backtest, news, portfolios, stocks, system, ws
 from app.scheduler import shutdown_scheduler, start_scheduler
+from app.security import auth_enabled, require_auth, require_secure_configuration
 from app.services.tickers import seed_stocks
 
 logger = logging.getLogger(__name__)
@@ -26,6 +27,16 @@ async def lifespan(app: FastAPI):
     settings = get_settings()
     configure_logging(settings)
     logger.info("Starting %s (%s)", settings.app_name, settings.environment)
+
+    # Refuses to boot a public deployment that would accept anonymous writes.
+    require_secure_configuration(settings)
+    if auth_enabled(settings):
+        logger.info("Authentication enabled: API requires a bearer token")
+    else:
+        logger.warning(
+            "Authentication disabled (no AUTH_PASSWORD set) - suitable for local "
+            "development only"
+        )
 
     if settings.create_tables_on_startup:
         await create_all()
@@ -65,12 +76,16 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
+    app.include_router(auth.router)
+    # /health stays open so load balancers and uptime checks can probe it;
+    # the system router guards its own admin routes individually.
     app.include_router(system.router)
-    app.include_router(news.router)
-    app.include_router(stocks.router)
-    app.include_router(alerts.router)
-    app.include_router(backtest.router)
-    app.include_router(portfolios.router)
+    app.include_router(news.router, dependencies=[Depends(require_auth)])
+    app.include_router(stocks.router, dependencies=[Depends(require_auth)])
+    app.include_router(alerts.router, dependencies=[Depends(require_auth)])
+    app.include_router(backtest.router, dependencies=[Depends(require_auth)])
+    app.include_router(portfolios.router, dependencies=[Depends(require_auth)])
+    # The WebSocket authenticates in its handshake: browsers cannot set headers.
     app.include_router(ws.router)
 
     @app.exception_handler(Exception)

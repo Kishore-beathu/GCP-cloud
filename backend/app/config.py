@@ -21,12 +21,27 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     log_file: str | None = None
 
+    # --- Authentication -----------------------------------------------------
+    # Setting AUTH_PASSWORD switches enforcement on; there is no separate flag
+    # to forget. Local development with no password left unset stays open, but
+    # ENVIRONMENT=production refuses to boot without both of these set — see
+    # app/security.py::require_secure_configuration.
+    auth_password: str | None = None
+    secret_key: str | None = None
+    auth_token_ttl_seconds: int = 60 * 60 * 12
+    # Failed sign-ins allowed per client per window, to blunt password guessing.
+    login_max_attempts: int = 8
+    login_window_seconds: int = 300
+
     # --- Database -----------------------------------------------------------
     # Async driver required: postgresql+asyncpg://... or sqlite+aiosqlite://...
     # Supabase: use the Session pooler URL (port 5432) and swap the scheme to
     # postgresql+asyncpg://. See backend/README.md for the full walkthrough.
     database_url: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/pharma"
     db_echo: bool = False
+    # Convenient for local development: creates any missing tables at startup.
+    # It never ALTERs an existing table, so production should set this false and
+    # apply schema changes with `alembic upgrade head` instead.
     create_tables_on_startup: bool = True
     # asyncpg prepared-statement cache. Leave unset for the sensible default:
     # disabled automatically on Supabase's transaction pooler (port 6543),

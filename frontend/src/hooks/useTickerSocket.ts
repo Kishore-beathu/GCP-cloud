@@ -3,7 +3,7 @@
 
 import { useEffect, useRef, useState } from 'react'
 
-import { WS_URL } from '../api/client'
+import { WS_URL, getToken } from '../api/client'
 import type { AlertPush, ServerMessage } from '../api/types'
 
 export interface LivePrice {
@@ -32,7 +32,12 @@ export function useTickerSocket(tickers: string[]) {
     function connect() {
       if (disposed || tickersRef.current.length === 0) return
       const [first, ...rest] = tickersRef.current
-      const socket = new WebSocket(`${WS_URL}/ws/tickers/${first}`)
+      // Browsers cannot set headers on a WebSocket, so the token rides along
+      // as a query parameter; the server rejects the handshake without it.
+      const auth = getToken()
+      const socket = new WebSocket(
+        `${WS_URL}/ws/tickers/${first}${auth ? `?token=${encodeURIComponent(auth)}` : ''}`,
+      )
       socketRef.current = socket
 
       socket.onopen = () => {

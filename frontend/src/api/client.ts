@@ -22,11 +22,50 @@ export const API_URL: string =
 
 export const WS_URL = API_URL.replace(/^http/, 'ws')
 
+// --- Session ----------------------------------------------------------------
+
+const TOKEN_KEY = 'ti.token'
+
+let token: string | null = localStorage.getItem(TOKEN_KEY)
+
+/** Raised on a 401 so callers can show the sign-in screen instead of an error. */
+export class Unauthorized extends Error {}
+
+export function getToken(): string | null {
+  return token
+}
+
+export function setToken(value: string | null): void {
+  token = value
+  if (value) localStorage.setItem(TOKEN_KEY, value)
+  else localStorage.removeItem(TOKEN_KEY)
+}
+
+/** Listeners fire when the stored session stops being accepted. */
+const expiryListeners = new Set<() => void>()
+
+export function onSessionExpired(listener: () => void): () => void {
+  expiryListeners.add(listener)
+  return () => expiryListeners.delete(listener)
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+  if (token) headers.Authorization = `Bearer ${token}`
+
   const response = await fetch(`${API_URL}${path}`, {
-    headers: { 'Content-Type': 'application/json' },
     ...init,
+    headers: { ...headers, ...(init?.headers as Record<string, string> | undefined) },
   })
+
+  // A 401 from /auth/login means "wrong password" and belongs to the caller.
+  // A 401 anywhere else means the token we sent is gone or stale.
+  if (response.status === 401 && path !== '/auth/login') {
+    setToken(null)
+    expiryListeners.forEach((listener) => listener())
+    throw new Unauthorized('Your session has expired. Sign in again.')
+  }
+
   if (!response.ok) {
     let detail = response.statusText
     try {
@@ -39,6 +78,28 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   }
   if (response.status === 204) return undefined as T
   return (await response.json()) as T
+}
+
+export interface SessionState {
+  authenticated: boolean
+  auth_required: boolean
+  subject: string | null
+}
+
+export function getSession(): Promise<SessionState> {
+  return request('/auth/session')
+}
+
+export async function login(password: string): Promise<void> {
+  const result = await request<{ token: string }>('/auth/login', {
+    method: 'POST',
+    body: JSON.stringify({ password }),
+  })
+  setToken(result.token)
+}
+
+export function logout(): void {
+  setToken(null)
 }
 
 export interface NewsFilters {

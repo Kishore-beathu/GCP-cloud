@@ -220,6 +220,69 @@ FINNHUB_API_KEY=... .venv/bin/python scripts/build_universe.py --limit 1000
 
 Review the CSV before committing — keyword matching is deliberately broad.
 
+## Authentication
+
+The API is unauthenticated by default, which suits local development. Setting
+`AUTH_PASSWORD` turns enforcement on — there is no separate flag to forget:
+
+```
+AUTH_PASSWORD=choose-a-strong-password
+SECRET_KEY=<python -c "from app.security import generate_secret_key; print(generate_secret_key())">
+```
+
+With those set, everything except `GET /health` and `POST /auth/login` needs a
+bearer token:
+
+```bash
+TOKEN=$(curl -sX POST localhost:8000/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"password":"..."}' | python -c 'import json,sys;print(json.load(sys.stdin)["token"])')
+
+curl -H "Authorization: Bearer $TOKEN" localhost:8000/stocks
+```
+
+Tokens are HMAC-signed (stdlib only, no new dependencies), expire after
+`AUTH_TOKEN_TTL_SECONDS`, and the dashboard handles sign-in and renewal for
+you. The WebSocket takes the token as a `?token=` query parameter, because
+browsers cannot set headers on a WebSocket handshake.
+
+**A production deployment refuses to start without this.** `ENVIRONMENT=production`
+plus a missing `AUTH_PASSWORD` or `SECRET_KEY` raises at startup rather than
+quietly exposing your data and your API quota — `/admin/ingest/*` is exactly
+the endpoint a stranger would use to burn your Finnhub allowance.
+
+Failed sign-ins are throttled per client (`LOGIN_MAX_ATTEMPTS` per
+`LOGIN_WINDOW_SECONDS`).
+
+## Database schema changes
+
+`app/models.py` is the source of truth. Two ways to get it into a database:
+
+- **Local development** — `CREATE_TABLES_ON_STARTUP=true` (the default) creates
+  any missing tables at boot. It never `ALTER`s an existing table, so it cannot
+  apply a change to a column that already exists.
+- **Anything you care about** — Alembic migrations:
+
+  ```bash
+  alembic upgrade head                          # apply pending migrations
+  alembic revision --autogenerate -m "add x"    # after changing a model
+  alembic downgrade -1                          # step back
+  ```
+
+  Alembic reads `DATABASE_URL` from the app's settings, so there is no second
+  config to keep in sync and no credentials in `alembic.ini`.
+
+**Adopting migrations on a database that already has tables** (for example a
+Supabase project created by `create_all`) — tell Alembic the baseline is
+already applied, once:
+
+```bash
+alembic stamp head
+```
+
+Then set `CREATE_TABLES_ON_STARTUP=false` and use `alembic upgrade head` from
+then on. CI fails the build if a model changes without a matching revision.
+
 ## Database
 
 `app/models.py` is the source of truth; tables are auto-created on startup.
@@ -278,12 +341,13 @@ clients talk to this API, not to Supabase directly.
 .venv/bin/python -m pytest
 ```
 
-128 tests cover sentiment scoring, event classification, ingestion/dedup, alert
+161 tests cover sentiment scoring, event classification, ingestion/dedup, alert
 matching and delivery, the REST API, the WebSocket hub, backtesting, scheduler
 batch rotation, portfolio maths and simulation, and every data integration
 (SEC, Finnhub REST, Alpha Vantage) against mocked transports. The live price
-stream is covered end to end against a real WebSocket server on localhost —
-still no network needed.
+stream is covered end to end against a real WebSocket server on localhost.
+Authentication is covered by token-forgery attempts and a parametrised sweep
+asserting every protected route rejects anonymous callers. No network needed.
 
 ## Roadmap (from the build plan)
 

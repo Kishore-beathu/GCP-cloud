@@ -26,6 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_session_factory
 from app.models import NewsArticle, SentimentScore, Stock, StockPrice
+from app.security import authorize_websocket
 from app.services.streams import ticker_hub
 
 logger = logging.getLogger(__name__)
@@ -89,8 +90,18 @@ async def _build_snapshot(db: AsyncSession, ticker: str) -> dict:
 
 
 @router.websocket("/ws/tickers/{ticker}")
-async def ticker_socket(websocket: WebSocket, ticker: str) -> None:
-    """Stream prices and alerts for one or more tickers."""
+async def ticker_socket(websocket: WebSocket, ticker: str, token: str | None = None) -> None:
+    """Stream prices and alerts for one or more tickers.
+
+    The token arrives as a query parameter because browsers cannot set headers
+    on a WebSocket handshake. An unauthorised connection is closed with 1008
+    (policy violation) before the hub ever sees it.
+    """
+    if authorize_websocket(token) is None:
+        await websocket.close(code=1008, reason="Sign in to stream prices")
+        logger.info("Rejected unauthenticated WebSocket connection")
+        return
+
     await ticker_hub.connect(websocket, ticker)
     session_factory = get_session_factory()
 

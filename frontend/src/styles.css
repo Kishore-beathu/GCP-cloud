@@ -515,3 +515,33 @@ code {
 .totals strong {
   font-variant-numeric: tabular-nums;
 }
+
+/* --- Sign-in --------------------------------------------------------------*/
+
+.booting {
+  display: grid;
+  place-items: center;
+  height: 100%;
+  color: var(--text-dim);
+}
+
+.signin {
+  display: grid;
+  place-items: center;
+  height: 100%;
+  padding: 20px;
+}
+
+.signin-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: min(340px, 100%);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 22px;
+}
+
+.signin-card h1 { font-size: 17px; margin: 0; }
+.signin-card p { margin: 0; font-size: 13px; }

@@ -31,3 +31,5 @@ This follows the accelerated 4-week plan:
 4. **Week 4** — Slack and email alert channels, paper-trading portfolio with a
    sentiment-strategy simulator, Docker image and GCP Cloud Run deployment
    (see [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md)). ✅
+5. **Production hardening** — password authentication on every endpoint and the
+   WebSocket, Alembic schema migrations, and GitHub Actions CI. ✅

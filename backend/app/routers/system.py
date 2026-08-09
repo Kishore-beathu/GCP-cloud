@@ -16,6 +16,7 @@ from app.integrations.finnhub import ingest_finnhub_news
 from app.integrations.finnhub_stream import finnhub_stream
 from app.integrations.sec import ingest_sec_filings
 from app.schemas import HealthResponse
+from app.security import require_auth
 from app.services.tickers import seed_stocks
 
 logger = logging.getLogger(__name__)
@@ -41,14 +42,14 @@ async def health(db: AsyncSession = Depends(get_db)) -> HealthResponse:
     )
 
 
-@router.get("/jobs/status", summary="Scheduled job and live-stream status")
+@router.get("/jobs/status", summary="Scheduled job and live-stream status", dependencies=[Depends(require_auth)])
 async def jobs_status() -> dict:
     from app.scheduler import job_status
 
     return {**job_status(), "price_stream": finnhub_stream.status()}
 
 
-@router.post("/admin/seed", summary="Seed the stock universe")
+@router.post("/admin/seed", summary="Seed the stock universe", dependencies=[Depends(require_auth)])
 async def seed(db: AsyncSession = Depends(get_db)) -> dict:
     added = await seed_stocks(db)
     return {"stocks_added": added}
@@ -63,7 +64,7 @@ async def _run_sec_ingest(tickers: list[str] | None) -> None:
             logger.exception("Manual SEC ingest failed")
 
 
-@router.post("/admin/ingest/sec", status_code=202, summary="Trigger SEC ingestion")
+@router.post("/admin/ingest/sec", status_code=202, summary="Trigger SEC ingestion", dependencies=[Depends(require_auth)])
 async def trigger_sec_ingest(
     background: BackgroundTasks,
     ticker: list[str] | None = Query(
@@ -83,7 +84,7 @@ async def _run_finnhub_ingest(tickers: list[str] | None) -> None:
             logger.exception("Manual Finnhub ingest failed")
 
 
-@router.post("/admin/ingest/finnhub", status_code=202, summary="Trigger Finnhub news ingestion")
+@router.post("/admin/ingest/finnhub", status_code=202, summary="Trigger Finnhub news ingestion", dependencies=[Depends(require_auth)])
 async def trigger_finnhub_ingest(
     background: BackgroundTasks,
     ticker: list[str] | None = Query(
@@ -103,7 +104,7 @@ async def _run_quote_update(tickers: list[str] | None) -> None:
             logger.exception("Manual quote update failed")
 
 
-@router.post("/admin/ingest/prices", status_code=202, summary="Trigger a quote refresh")
+@router.post("/admin/ingest/prices", status_code=202, summary="Trigger a quote refresh", dependencies=[Depends(require_auth)])
 async def trigger_quote_update(
     background: BackgroundTasks,
     ticker: list[str] | None = Query(
@@ -115,7 +116,7 @@ async def trigger_quote_update(
     return {"status": "accepted", "tickers": ticker or "all active"}
 
 
-@router.post("/admin/backfill/prices", summary="Backfill daily price history for one ticker")
+@router.post("/admin/backfill/prices", summary="Backfill daily price history for one ticker", dependencies=[Depends(require_auth)])
 async def trigger_price_backfill(
     ticker: str = Query(description="Symbol to backfill, e.g. MRNA"),
     outputsize: str = Query(
