@@ -16,11 +16,12 @@ and backtests how news historically moved prices.
 
 This follows the accelerated 4-week plan:
 
-1. **Week 1 (this phase)** — Backend MVP: database schema, FastAPI server,
-   sentiment + event classification, SEC EDGAR ingestion, alert engine,
-   real-time WebSocket, backtesting, scheduler. ✅
-2. **Week 2** — More data sources (Finnhub news, Alpha Vantage prices), the
-   full ~1000-symbol universe, Redis caching.
+1. **Week 1** — Backend MVP: database schema, FastAPI server, sentiment +
+   event classification, SEC EDGAR ingestion, alert engine, real-time
+   WebSocket, backtesting, scheduler. ✅
+2. **Week 2** — Data breadth: Finnhub company news, Alpha Vantage quotes and
+   daily-history backfill, rate-limit-aware batch rotation, tooling to grow
+   the universe toward ~1000 symbols. ✅
 3. **Week 3** — React dashboard, Electron desktop app, mobile-responsive PWA.
 4. **Week 4** — Slack/email/push alert channels, portfolio simulator,
    GCP deployment (Cloud Run + Cloud SQL).

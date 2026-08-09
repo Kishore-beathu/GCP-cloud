@@ -52,9 +52,19 @@ class Settings(BaseSettings):
     scheduler_enabled: bool = True
     sec_ingest_interval_minutes: int = 30
     sec_ingest_batch_size: int = 25
-    price_refresh_interval_seconds: int = 60
     ticker_push_interval_seconds: int = 10
     data_retention_days: int = 365
+
+    # Finnhub company news. The free tier allows ~60 calls/min; one call covers
+    # one ticker, so a batch of 50 per 5-minute run stays comfortably inside it.
+    finnhub_news_interval_minutes: int = 5
+    finnhub_batch_size: int = 50
+    finnhub_lookback_days: int = 3
+
+    # Alpha Vantage quotes. The free tier is 5 calls/min, so the default batch
+    # matches it exactly; paid tiers can raise the batch size and cadence.
+    alpha_vantage_interval_seconds: int = 60
+    alpha_vantage_batch_size: int = 5
 
     @field_validator("cors_origins", mode="before")
     @classmethod

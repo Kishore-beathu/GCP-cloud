@@ -15,6 +15,8 @@ from sqlalchemy import delete, select
 
 from app.config import get_settings
 from app.database import get_session_factory
+from app.integrations.alpha_vantage import update_quotes
+from app.integrations.finnhub import ingest_finnhub_news
 from app.integrations.sec import ingest_sec_filings
 from app.models import NewsArticle, Stock, StockPrice
 from app.services.streams import ticker_hub
@@ -23,9 +25,36 @@ logger = logging.getLogger(__name__)
 
 _scheduler: AsyncIOScheduler | None = None
 
-# Rotating cursor into the ticker universe: each SEC run picks up where the last
-# left off, so one pass never hammers the SEC with the whole watchlist at once.
+# Rotating cursors into the ticker universe: each run of a source picks up
+# where its last run left off, so one pass never hits a whole 1000-symbol
+# watchlist against a rate-limited API at once.
 _sec_cursor = 0
+_finnhub_cursor = 0
+_quote_cursor = 0
+
+
+async def _active_tickers(db) -> list[str]:
+    return list(
+        (
+            await db.execute(
+                select(Stock.ticker).where(Stock.is_active.is_(True)).order_by(Stock.ticker)
+            )
+        ).scalars()
+    )
+
+
+def _next_batch(tickers: list[str], cursor: int, size: int) -> tuple[list[str], int]:
+    """Take ``size`` tickers starting at ``cursor``, wrapping around the list.
+
+    Capped at one pass over the universe — repeating a ticker within a single
+    batch would spend rate-limited API calls for nothing.
+    """
+    size = max(1, min(size, len(tickers)))
+    start = cursor % len(tickers)
+    batch = tickers[start : start + size]
+    if len(batch) < size:
+        batch += tickers[: size - len(batch)]
+    return batch, (start + size) % len(tickers)
 
 
 async def sec_ingest_job() -> None:
@@ -34,27 +63,57 @@ async def sec_ingest_job() -> None:
     settings = get_settings()
 
     async with get_session_factory()() as db:
-        tickers = list(
-            (
-                await db.execute(
-                    select(Stock.ticker).where(Stock.is_active.is_(True)).order_by(Stock.ticker)
-                )
-            ).scalars()
-        )
+        tickers = await _active_tickers(db)
         if not tickers:
             logger.info("SEC job: no active tickers")
             return
 
-        size = max(1, settings.sec_ingest_batch_size)
-        start = _sec_cursor % len(tickers)
-        batch = tickers[start : start + size]
-        if len(batch) < size:
-            batch += tickers[: size - len(batch)]  # wrap around
-        _sec_cursor = (start + size) % len(tickers)
-
+        batch, _sec_cursor = _next_batch(tickers, _sec_cursor, settings.sec_ingest_batch_size)
         logger.info("SEC job: ingesting %d tickers starting at %s", len(batch), batch[0])
         report = await ingest_sec_filings(db, batch)
         logger.info("SEC job complete: %s", report.as_dict())
+
+
+async def finnhub_news_job() -> None:
+    """Ingest Finnhub company news for the next batch of tickers."""
+    global _finnhub_cursor
+    settings = get_settings()
+
+    async with get_session_factory()() as db:
+        tickers = await _active_tickers(db)
+        if not tickers:
+            return
+
+        batch, _finnhub_cursor = _next_batch(tickers, _finnhub_cursor, settings.finnhub_batch_size)
+        logger.info("Finnhub job: ingesting %d tickers starting at %s", len(batch), batch[0])
+        report = await ingest_finnhub_news(db, batch)
+        logger.info("Finnhub job complete: %s", report.as_dict())
+
+
+async def quote_refresh_job() -> None:
+    """Refresh Alpha Vantage quotes for the next batch of tickers.
+
+    Subscribed WebSocket tickers jump the queue so live viewers always see the
+    freshest data; the remaining slots rotate through the rest of the universe.
+    """
+    global _quote_cursor
+    settings = get_settings()
+
+    async with get_session_factory()() as db:
+        tickers = await _active_tickers(db)
+        if not tickers:
+            return
+
+        size = max(1, settings.alpha_vantage_batch_size)
+        watched = sorted(ticker_hub.subscribed_tickers() & set(tickers))[:size]
+        batch = list(watched)
+        if len(batch) < size:
+            rotation, _quote_cursor = _next_batch(tickers, _quote_cursor, size - len(batch))
+            batch += [t for t in rotation if t not in batch]
+
+        result = await update_quotes(db, batch)
+        if result["inserted"] or result["updated"] or result["failed"]:
+            logger.info("Quote job (%s): %s", ",".join(batch), result)
 
 
 async def price_push_job() -> None:
@@ -139,6 +198,26 @@ def start_scheduler() -> AsyncIOScheduler | None:
         max_instances=1,
         coalesce=True,
     )
+    # API-keyed sources only register when their key is configured, so
+    # /jobs/status reflects what is actually running.
+    if settings.finnhub_api_key:
+        scheduler.add_job(
+            finnhub_news_job,
+            IntervalTrigger(minutes=settings.finnhub_news_interval_minutes),
+            id="finnhub_news",
+            name="Finnhub news ingestion",
+            max_instances=1,
+            coalesce=True,
+        )
+    if settings.alpha_vantage_api_key:
+        scheduler.add_job(
+            quote_refresh_job,
+            IntervalTrigger(seconds=settings.alpha_vantage_interval_seconds),
+            id="quote_refresh",
+            name="Alpha Vantage quote refresh",
+            max_instances=1,
+            coalesce=True,
+        )
     scheduler.add_job(
         price_push_job,
         IntervalTrigger(seconds=settings.ticker_push_interval_seconds),
