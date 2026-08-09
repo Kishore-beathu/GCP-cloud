@@ -1,0 +1,6 @@
+# Optional: enables the FinBERT sentiment backend (SENTIMENT_BACKEND=finbert).
+# Without these the app falls back to the built-in lexicon analyzer, which needs
+# no model download and no GPU.
+-r requirements.txt
+transformers>=4.44.0
+torch>=2.4.0
