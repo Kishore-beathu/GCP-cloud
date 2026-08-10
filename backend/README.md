@@ -21,6 +21,31 @@ cp .env.example .env          # then edit: DATABASE_URL, SEC_USER_AGENT
 
 Open http://localhost:8000/docs for the interactive API reference.
 
+On Windows, call the interpreter explicitly rather than activating the venv —
+it avoids PowerShell's execution-policy block on `Activate.ps1` and leaves no
+doubt about which Python is running:
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\python -m pip install -r requirements-dev.txt
+.\.venv\Scripts\python -m uvicorn app.main:app --reload --port 8000
+```
+
+### If it won't start
+
+Uvicorn reports a failed startup as `Application startup failed. Exiting.`
+below a long traceback. Run the preflight check instead — it tries each
+startup step separately and names the one that broke:
+
+```bash
+.venv/bin/python -m scripts.doctor        # .\.venv\Scripts\python -m scripts.doctor
+```
+
+It checks the interpreter, the installed dependencies, `.env` parsing, the
+database URL scheme and a real connection, and which integrations are
+configured. Secrets are reported as present or absent and never printed, so
+the output is safe to paste into an issue.
+
 No PostgreSQL yet? Point `DATABASE_URL` at SQLite to try it out:
 
 ```
