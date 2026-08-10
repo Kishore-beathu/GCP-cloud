@@ -118,6 +118,65 @@ SEED_TICKERS: tuple[TickerSeed, ...] = (
     # The buildings. REITs, so they trade on leasing and power, not on chips.
     TickerSeed("EQIX", "Equinix Inc.", "data_center", "NASDAQ"),
     TickerSeed("DLR", "Digital Realty Trust", "data_center", "NYSE"),
+    # --- AI, deepened --------------------------------------------------------
+    # More silicon. Intel and Qualcomm are the incumbents AI is reshaping;
+    # the rest sell into the accelerator build-out directly.
+    TickerSeed("INTC", "Intel Corporation", "ai_semiconductor", "NASDAQ"),
+    TickerSeed("QCOM", "QUALCOMM Incorporated", "ai_semiconductor", "NASDAQ"),
+    TickerSeed("ALAB", "Astera Labs Inc.", "ai_semiconductor", "NASDAQ"),
+    TickerSeed("CRDO", "Credo Technology Group", "ai_semiconductor", "NASDAQ"),
+    TickerSeed("MPWR", "Monolithic Power Systems", "ai_semiconductor", "NASDAQ"),
+    TickerSeed("STM", "STMicroelectronics NV (ADR)", "ai_semiconductor", "NYSE"),
+    TickerSeed("IFX.DE", "Infineon Technologies AG", "ai_semiconductor", "XETRA"),
+    TickerSeed("2454.TW", "MediaTek Inc.", "ai_semiconductor", "TWSE"),
+    TickerSeed("0981.HK", "Semiconductor Manufacturing International", "ai_semiconductor", "HKEX"),
+    # Fabrication equipment and design tools. These trade on capital spending
+    # plans rather than on chip volumes, so they lead the cycle.
+    TickerSeed("AMAT", "Applied Materials Inc.", "ai_equipment", "NASDAQ"),
+    TickerSeed("LRCX", "Lam Research Corporation", "ai_equipment", "NASDAQ"),
+    TickerSeed("KLAC", "KLA Corporation", "ai_equipment", "NASDAQ"),
+    TickerSeed("SNPS", "Synopsys Inc.", "ai_equipment", "NASDAQ"),
+    TickerSeed("CDNS", "Cadence Design Systems", "ai_equipment", "NASDAQ"),
+    TickerSeed("8035.T", "Tokyo Electron Ltd.", "ai_equipment", "TSE"),
+    TickerSeed("6857.T", "Advantest Corporation", "ai_equipment", "TSE"),
+    TickerSeed("ASM.AS", "ASM International NV", "ai_equipment", "Euronext Amsterdam"),
+    TickerSeed("BESI.AS", "BE Semiconductor Industries", "ai_equipment", "Euronext Amsterdam"),
+    # Cluster interconnect and optics: a GPU fleet is only as fast as the
+    # fabric between the racks, which is why these move on the same orders.
+    TickerSeed("ANET", "Arista Networks Inc.", "ai_networking", "NYSE"),
+    TickerSeed("COHR", "Coherent Corp.", "ai_networking", "NYSE"),
+    TickerSeed("LITE", "Lumentum Holdings Inc.", "ai_networking", "NASDAQ"),
+    TickerSeed("CIEN", "Ciena Corporation", "ai_networking", "NYSE"),
+    # Platforms and applications.
+    TickerSeed("IBM", "International Business Machines", "ai_tech", "NYSE"),
+    TickerSeed("SMCI", "Super Micro Computer Inc.", "ai_tech", "NASDAQ"),
+    TickerSeed("BIDU", "Baidu Inc. (ADR)", "ai_tech", "NASDAQ"),
+    TickerSeed("9988.HK", "Alibaba Group Holding", "ai_tech", "HKEX"),
+    TickerSeed("0700.HK", "Tencent Holdings Ltd.", "ai_tech", "HKEX"),
+    TickerSeed("ADBE", "Adobe Inc.", "ai_software", "NASDAQ"),
+    TickerSeed("SAP", "SAP SE (ADR)", "ai_software", "NYSE"),
+    TickerSeed("AI", "C3.ai Inc.", "ai_software", "NYSE"),
+    TickerSeed("PATH", "UiPath Inc.", "ai_software", "NYSE"),
+    TickerSeed("SOUN", "SoundHound AI Inc.", "ai_software", "NASDAQ"),
+    # --- Data storage, deepened ----------------------------------------------
+    TickerSeed("005930.KS", "Samsung Electronics Co.", "memory", "KRX"),
+    TickerSeed("QTM", "Quantum Corporation", "storage_hardware", "NASDAQ"),
+    # Storage sold as a service rather than as a box.
+    TickerSeed("DBX", "Dropbox Inc.", "cloud_storage", "NASDAQ"),
+    TickerSeed("BOX", "Box Inc.", "cloud_storage", "NYSE"),
+    TickerSeed("AKAM", "Akamai Technologies Inc.", "cloud_storage", "NASDAQ"),
+    TickerSeed("NET", "Cloudflare Inc.", "cloud_storage", "NYSE"),
+    # Query and observability layers over stored data.
+    TickerSeed("DDOG", "Datadog Inc.", "data_platform", "NASDAQ"),
+    TickerSeed("ESTC", "Elastic NV", "data_platform", "NYSE"),
+    # More buildings, including the operators built specifically for AI
+    # workloads — these trade on power availability more than on floor space.
+    TickerSeed("IRM", "Iron Mountain Inc.", "data_center", "NYSE"),
+    TickerSeed("VRT", "Vertiv Holdings Co.", "data_center", "NYSE"),
+    TickerSeed("GDS", "GDS Holdings Ltd. (ADR)", "data_center", "NASDAQ"),
+    TickerSeed("9698.HK", "GDS Holdings Ltd.", "data_center", "HKEX"),
+    TickerSeed("APLD", "Applied Digital Corporation", "data_center", "NASDAQ"),
+    TickerSeed("IREN", "IREN Limited", "data_center", "NASDAQ"),
     TickerSeed("VEEV", "Veeva Systems Inc.", "health_it", "NYSE"),
     TickerSeed("DXCM", "DexCom Inc.", "medtech", "NASDAQ"),
     TickerSeed("ISRG", "Intuitive Surgical", "medtech", "NASDAQ"),

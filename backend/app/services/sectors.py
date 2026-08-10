@@ -54,10 +54,18 @@ GROUPS: tuple[SectorGroup, ...] = (
         label="Artificial Intelligence",
         description=(
             "Companies whose valuation moves on AI demand: model and platform "
-            "owners, the semiconductors that train them, and AI-first drug "
-            "discovery."
+            "owners, the semiconductors that train them, the equipment that "
+            "fabricates those, the networking that connects them, and AI-first "
+            "drug discovery."
         ),
-        sectors=("ai_tech", "ai_semiconductor", "ai_software", "ai_health"),
+        sectors=(
+            "ai_tech",
+            "ai_semiconductor",
+            "ai_equipment",
+            "ai_networking",
+            "ai_software",
+            "ai_health",
+        ),
     ),
     SectorGroup(
         key="data_storage",
@@ -70,6 +78,7 @@ GROUPS: tuple[SectorGroup, ...] = (
         sectors=(
             "storage_hardware",
             "memory",
+            "cloud_storage",
             "data_platform",
             "data_center",
         ),

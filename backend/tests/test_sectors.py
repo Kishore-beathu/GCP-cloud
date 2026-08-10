@@ -48,8 +48,8 @@ def test_the_three_requested_groups_all_have_symbols():
         counts[key] = counts.get(key, 0) + 1
 
     assert counts["pharma_life_sciences"] >= 50
-    assert counts["ai"] >= 15
-    assert counts["data_storage"] >= 10
+    assert counts["ai"] >= 45
+    assert counts["data_storage"] >= 30
 
 
 def test_ai_group_spans_platforms_semiconductors_and_drug_discovery():
@@ -75,6 +75,39 @@ def test_seed_universe_has_no_duplicate_tickers():
     tickers = [seed.ticker for seed in SEED_TICKERS]
 
     assert len(tickers) == len(set(tickers))
+
+
+def test_every_suffixed_symbol_resolves_to_a_venue():
+    """An unresolved suffix means no region, currency or session for that row."""
+    from app.services import markets
+
+    unresolved = [
+        seed.ticker
+        for seed in SEED_TICKERS
+        if "." in seed.ticker and markets.resolve(seed.ticker) is None
+    ]
+
+    assert unresolved == []
+
+
+def test_ai_group_covers_the_whole_supply_chain():
+    """Owning only the model companies misses most of what AI demand moves."""
+    by_ticker = {seed.ticker: seed.sector for seed in SEED_TICKERS}
+
+    assert by_ticker["AMAT"] == "ai_equipment"      # makes the fabs' machines
+    assert by_ticker["ANET"] == "ai_networking"     # connects the racks
+    assert by_ticker["TSM"] == "ai_semiconductor"   # fabricates the silicon
+    assert by_ticker["MSFT"] == "ai_tech"           # sells the capacity
+
+
+def test_data_storage_group_covers_boxes_services_and_buildings():
+    by_ticker = {seed.ticker: seed.sector for seed in SEED_TICKERS}
+
+    assert by_ticker["STX"] == "storage_hardware"
+    assert by_ticker["005930.KS"] == "memory"
+    assert by_ticker["DBX"] == "cloud_storage"
+    assert by_ticker["DDOG"] == "data_platform"
+    assert by_ticker["VRT"] == "data_center"
 
 
 # --- API --------------------------------------------------------------------
