@@ -28,6 +28,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.models import Stock, StockPrice
+from app.services.redaction import redact, secrets_from
 
 logger = logging.getLogger(__name__)
 
@@ -316,11 +317,15 @@ async def backfill_daily(
                 client, symbol, settings.alpha_vantage_api_key, outputsize
             )
     except AlphaVantageThrottled as exc:
-        logger.warning("Backfill for %s hit the rate limit: %s", symbol, exc)
-        return {"inserted": 0, "updated": 0, "note": f"Rate limited: {exc}"}
+        # Alpha Vantage quotes the API key back inside its rate-limit notice,
+        # and this note is returned over the API, so it must be scrubbed.
+        note = redact(f"Rate limited: {exc}", secrets_from(settings))
+        logger.warning("Backfill for %s hit the rate limit: %s", symbol, note)
+        return {"inserted": 0, "updated": 0, "note": note}
     except AlphaVantageRejected as exc:
-        logger.warning("Backfill for %s rejected: %s", symbol, exc)
-        return {"inserted": 0, "updated": 0, "note": f"Rejected by Alpha Vantage: {exc}"}
+        note = redact(f"Rejected by Alpha Vantage: {exc}", secrets_from(settings))
+        logger.warning("Backfill for %s rejected: %s", symbol, note)
+        return {"inserted": 0, "updated": 0, "note": note}
 
     result = await upsert_quotes(db, stocks[0], quotes)
     logger.info("Backfill for %s: %s", symbol, result)

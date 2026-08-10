@@ -184,3 +184,66 @@ async def test_probe_never_echoes_a_key(monkeypatch):
 
     assert secret not in probe.detail
     assert secret not in str(probe.as_dict())
+
+
+# --- Credential redaction ---------------------------------------------------
+# Alpha Vantage quotes the API key back inside its own rate-limit notice. The
+# report is written to be pasted into a chat or an issue, so a vendor echoing
+# a key is a disclosure even though our code never interpolates one.
+
+ALPHA_VANTAGE_ECHOES_THE_KEY = (
+    "We have detected your API key as {key} and our standard API rate limit is "
+    "25 requests per day. Please subscribe to any of the premium plans."
+)
+
+
+@pytest.mark.asyncio
+async def test_probe_sources_redacts_a_key_the_vendor_echoed(monkeypatch):
+    from app.services import diagnostics
+
+    secret = "XHS833JZWR5LZD0Z"
+
+    async def echoing(client, settings_obj):
+        return diagnostics.Probe(
+            "alpha_vantage",
+            True,
+            False,
+            ALPHA_VANTAGE_ECHOES_THE_KEY.format(key=secret),
+        )
+
+    async def fine(client, settings_obj):
+        return diagnostics.Probe("sec_edgar", True, True, "ok")
+
+    monkeypatch.setattr(diagnostics, "probe_alpha_vantage", echoing)
+    monkeypatch.setattr(diagnostics, "probe_sec", fine)
+    monkeypatch.setattr(diagnostics, "probe_finnhub", fine)
+
+    report = await probe_sources(settings(alpha_vantage_api_key=secret))
+
+    rendered = str(report)
+    assert secret not in rendered
+    assert "[REDACTED]" in rendered
+    # The rest of the message survives: it is what tells you to upgrade.
+    assert "25 requests per day" in rendered
+
+
+@pytest.mark.asyncio
+async def test_redaction_covers_every_configured_credential(monkeypatch):
+    """A vendor could echo any of them; do not special-case one key."""
+    from app.services import diagnostics
+
+    finnhub_key = "d9s6rjpr01qoo7o6tf50"
+
+    async def leaky(client, settings_obj):
+        return diagnostics.Probe("finnhub_news", True, False, f"bad token {finnhub_key}")
+
+    async def fine(client, settings_obj):
+        return diagnostics.Probe("sec_edgar", True, True, "ok")
+
+    monkeypatch.setattr(diagnostics, "probe_finnhub", leaky)
+    monkeypatch.setattr(diagnostics, "probe_sec", fine)
+    monkeypatch.setattr(diagnostics, "probe_alpha_vantage", fine)
+
+    report = await probe_sources(settings(finnhub_api_key=finnhub_key))
+
+    assert finnhub_key not in str(report)

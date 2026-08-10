@@ -19,6 +19,7 @@ from datetime import date, timedelta
 import httpx
 
 from app.config import Settings
+from app.services.redaction import redact, secrets_from
 
 # A large, liquid US name that every plan covers, so a failure is about the
 # account rather than the symbol.
@@ -233,6 +234,13 @@ async def probe_sources(settings: Settings) -> dict:
             await probe_finnhub(client, settings),
             await probe_alpha_vantage(client, settings),
         ]
+
+    # Vendor messages can contain the key that was sent: Alpha Vantage's
+    # rate-limit notice quotes it back verbatim. This report is written to be
+    # pasted somewhere, so nothing leaves here without passing through here.
+    secrets = secrets_from(settings)
+    for probe in probes:
+        probe.detail = redact(probe.detail, secrets) or ""
 
     return {
         "healthy": [probe.source for probe in probes if probe.ok],
