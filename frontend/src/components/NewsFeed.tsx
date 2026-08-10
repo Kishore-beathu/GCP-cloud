@@ -20,6 +20,11 @@ const EVENT_OPTIONS: EventType[] = [
   'other',
 ]
 
+/** Vendor symbols carry a venue suffix (AZN.L, 4502.T); US lines have none. */
+function isUsListing(ticker: string): boolean {
+  return !ticker.includes('.')
+}
+
 interface Props {
   ticker: string | null
 }
@@ -76,7 +81,19 @@ export function NewsFeed({ ticker }: Props) {
       {error && <p className="error">Failed to load news: {error}</p>}
       {data && data.length === 0 && (
         <p className="muted">
-          No articles yet. Once ingestion runs (SEC or Finnhub), scored news appears here.
+          {/* Saying "once ingestion runs" to someone who has already run it sends
+              them to debug a working pipeline. For a non-US listing the far more
+              likely cause is that no configured source covers the symbol. */}
+          {ticker && !isUsListing(ticker) ? (
+            <>
+              No articles for {ticker}. SEC EDGAR covers US registrants only, and
+              Finnhub&rsquo;s news coverage of non-US listings depends on your plan —
+              so this symbol may have no source behind it. US tickers will have news
+              once ingestion has run.
+            </>
+          ) : (
+            <>No articles yet. Once ingestion runs (SEC or Finnhub), scored news appears here.</>
+          )}
         </p>
       )}
 

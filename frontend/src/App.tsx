@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 
-import { getSession, getStocks, logout, onSessionExpired } from './api/client'
+import { getNews, getSession, getStocks, logout, onSessionExpired } from './api/client'
 import { AlertToasts } from './components/AlertToasts'
 import { AlertsPanel } from './components/AlertsPanel'
 import { BacktestPanel } from './components/BacktestPanel'
@@ -61,7 +61,16 @@ function Dashboard({ onSignOut }: { onSignOut: () => void }) {
 
   const { prices, alerts, connected, dismissAlert } = useTickerSocket(liveTickers)
 
-  const active = selected ?? allTickers[0] ?? null
+  // Land on a ticker that has something to show. Defaulting to the first
+  // symbol alphabetically opens on 068270.KS, whose news and prices need
+  // vendor coverage a free plan does not include — so the first thing every
+  // new user saw was an empty dashboard. The newest stored article names a
+  // ticker that demonstrably has data; the alphabetical first is the fallback
+  // for a database with no news in it yet.
+  const latestArticle = useAsync(() => getNews({ limit: 1 }), [])
+  const defaultTicker = latestArticle.data?.[0]?.ticker ?? allTickers[0] ?? null
+
+  const active = selected ?? defaultTicker
 
   return (
     <div className="app">
