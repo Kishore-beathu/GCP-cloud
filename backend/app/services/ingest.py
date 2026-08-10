@@ -76,14 +76,22 @@ async def _existing_urls(db: AsyncSession, articles: list[RawArticle]) -> set[tu
 
 
 async def _recent_by_ticker(
-    db: AsyncSession, articles: list[RawArticle], window: timedelta
+    db: AsyncSession,
+    articles: list[RawArticle],
+    window: timedelta,
+    ticker_ids: set[int],
 ) -> dict[int, list[NewsArticle]]:
     """Articles already stored for these tickers inside the merge window.
+
+    Scoped to the tickers in this batch. Without that filter the query reads
+    every article in the window across the whole universe on every ingest —
+    invisible on a fresh database and steadily worse as one fills up, on a path
+    that eight sources now run several times a minute.
 
     Only primaries are returned: a duplicate always points at the earliest
     copy, so chains never form and the corroboration count stays meaningful.
     """
-    if not articles:
+    if not articles or not ticker_ids:
         return {}
 
     earliest = min(article.published_at for article in articles) - window
@@ -93,6 +101,7 @@ async def _recent_by_ticker(
     rows = (
         await db.execute(
             select(NewsArticle).where(
+                NewsArticle.ticker_id.in_(ticker_ids),
                 NewsArticle.published_at >= earliest,
                 NewsArticle.duplicate_of_id.is_(None),
             )
@@ -144,7 +153,9 @@ async def store_articles(
     window = merge_window if merge_window is not None else DEFAULT_WINDOW
     stocks = await _load_stock_map(db, {a.ticker.upper() for a in articles})
     seen = await _existing_urls(db, articles)
-    recent = await _recent_by_ticker(db, articles, window)
+    recent = await _recent_by_ticker(
+        db, articles, window, {stock.id for stock in stocks.values()}
+    )
     stored: list[tuple[NewsArticle, SentimentScore, str]] = []
     # Resolved after the flush: a primary found earlier in this same batch has
     # no primary key yet, so the link cannot be set at construction time.

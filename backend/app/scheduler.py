@@ -360,7 +360,13 @@ def start_scheduler() -> AsyncIOScheduler | None:
             coalesce=True,
         )
 
-    for enabled, job, interval, job_id, name in (
+    # Six feed jobs on round intervals all come due at the same instants, and
+    # every one of them writes. Against SQLite — the documented local default —
+    # concurrent writers serialise on a file lock and a burst can stall the
+    # event loop that is also serving the dashboard. Each job is therefore
+    # offset by a fixed amount and given jitter, so they queue behind each
+    # other by design rather than by luck.
+    for offset, (enabled, job, interval, job_id, name) in enumerate((
         (
             settings.edgar_firehose_enabled,
             edgar_firehose_job,
@@ -397,16 +403,24 @@ def start_scheduler() -> AsyncIOScheduler | None:
             "clinical",
             "Clinical and regulatory",
         ),
-    ):
+    )):
         if not enabled:
             continue
         scheduler.add_job(
             job,
-            IntervalTrigger(minutes=interval),
+            IntervalTrigger(
+                minutes=interval,
+                # 20 seconds apart, and never all on the minute.
+                start_date=datetime.now(timezone.utc) + timedelta(seconds=20 * (offset + 1)),
+                jitter=15,
+            ),
             id=job_id,
             name=name,
             max_instances=1,
             coalesce=True,
+            # A slow feed must not queue a second copy of itself behind the
+            # first; skipping a cycle is cheaper than doubling the write load.
+            misfire_grace_time=30,
         )
 
     scheduler.add_job(
