@@ -311,4 +311,6 @@ async def test_feed_probe_flags_a_changed_feed_shape():
         probe = await probe_feed(client, "wire", "https://e.com/rss", index)
 
     assert not probe.ok
-    assert "shape may have changed" in probe.detail
+    # Naming what came back separates an HTML error page from a moved element.
+    assert "Reachable but nothing parsed" in probe.detail
+    assert "not a feed" in probe.detail

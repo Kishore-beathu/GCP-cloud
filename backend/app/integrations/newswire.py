@@ -97,6 +97,12 @@ async def ingest_newswires(
     cutoff = datetime.now(timezone.utc) - timedelta(
         hours=lookback_hours or settings.newswire_lookback_hours
     )
+    if wires is None and settings.newswire_feeds:
+        # An operator who found which wires answer for them keeps only those.
+        wires = tuple(
+            Wire(key=f"custom_{i}", name=url, url=url)
+            for i, url in enumerate(settings.newswire_feeds)
+        )
     collected: list[RawArticle] = []
     seen_links: set[str] = set()
 

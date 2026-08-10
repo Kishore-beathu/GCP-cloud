@@ -144,6 +144,13 @@ class Settings(BaseSettings):
     # FDA approvals, recalls and enforcement. No key; openFDA rate-limits
     # anonymous callers, which a 15-minute job stays well inside.
     fda_enabled: bool = True
+    # Publisher feed URLs are settings, not constants. Every one of these is a
+    # third party's routing decision, and when one moves the fix should be a
+    # line in .env rather than a code change and a redeploy.
+    fda_press_feed: str = (
+        "https://www.fda.gov/about-fda/contact-fda/stay-informed/rss-feeds/"
+        "press-releases/rss.xml"
+    )
     fda_interval_minutes: int = 15
     fda_lookback_days: int = 3
     fda_batch_size: int = 100
@@ -158,16 +165,21 @@ class Settings(BaseSettings):
     # Newswires carry a release at issue, before aggregators pick it up — and
     # carry every other issuer's releases too. The noisiest source here.
     newswire_enabled: bool = True
+    # Comma-separated. Empty means "use the built-in list"; set it to keep only
+    # the wires that answer for you.
+    newswire_feeds: CsvList = Field(default_factory=list)
     newswire_interval_minutes: int = 5
     newswire_lookback_hours: int = 6
 
     # A T1 halt says an announcement is imminent, which nothing else can.
     halts_enabled: bool = True
+    halts_feed: str = "https://www.nasdaqtrader.com/rss.aspx?feed=tradehalts"
     halts_interval_minutes: int = 2
     halts_lookback_hours: int = 12
 
     # Trial status changes and EMA opinions: slower, but the primary record.
     clinical_enabled: bool = True
+    ema_feed: str = "https://www.ema.europa.eu/en/rss.xml"
     clinical_interval_minutes: int = 60
     clinical_lookback_days: int = 3
     clinical_batch_size: int = 100
@@ -218,7 +230,7 @@ class Settings(BaseSettings):
     # the ingestion pipeline that triggered it.
     notification_timeout_seconds: float = 10.0
 
-    @field_validator("cors_origins", "email_to", "exchange_filing_feeds", mode="before")
+    @field_validator("cors_origins", "email_to", "exchange_filing_feeds", "newswire_feeds", mode="before")
     @classmethod
     def _split_csv(cls, value: object) -> object:
         """Accept a comma-separated string so these work as plain env vars."""

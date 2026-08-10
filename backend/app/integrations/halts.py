@@ -107,7 +107,7 @@ async def ingest_halts(db: AsyncSession, lookback_hours: int | None = None) -> I
 
     collected: list[RawArticle] = []
     async with httpx.AsyncClient() as client:
-        for entry in await fetch_feed(client, FEED_URL):
+        for entry in await fetch_feed(client, settings.halts_feed):
             if entry.published_at < cutoff:
                 continue
 

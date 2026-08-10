@@ -148,9 +148,18 @@ async def fetch_feed(
             params=params,
             headers={"User-Agent": user_agent, "Accept": "application/xml, text/xml, */*"},
             timeout=timeout,
+            # httpx does not follow redirects by default. Several of these
+            # publishers answer 3xx for their canonical feed URL — the FDA
+            # newsroom serves a 302 to an interstitial — so without this the
+            # feed reads as "reachable but empty" forever.
+            follow_redirects=True,
         )
     except httpx.HTTPError as exc:
-        logger.warning("Feed request failed for %s: %s", url, exc)
+        # Some httpx errors stringify to "", which makes a log line say
+        # "Feed request failed for X: " and name no cause at all.
+        logger.warning(
+            "Feed request failed for %s: %s: %s", url, type(exc).__name__, exc or "no detail"
+        )
         return []
 
     if response.status_code != 200:

@@ -292,9 +292,14 @@ async def probe_feed(
             params=params,
             headers={"User-Agent": user_agent or DEFAULT_USER_AGENT},
             timeout=20.0,
+            follow_redirects=True,
         )
     except httpx.HTTPError as exc:
-        return FeedProbe(source, url, False, 0, 0, f"Network error: {exc}")
+        # An httpx error can stringify to empty, leaving "Network error: " and
+        # no way to tell a DNS failure from a TLS one.
+        return FeedProbe(
+            source, url, False, 0, 0, f"{type(exc).__name__}: {exc or 'no detail'}"
+        )
 
     elapsed = int((time.perf_counter() - started) * 1000)
 
@@ -311,13 +316,19 @@ async def probe_feed(
 
     entries = parse_feed(response.text)
     if not entries:
+        # Say what actually came back. "No entries parsed" is the same message
+        # for an HTML error page, a JSON API and a feed whose element names
+        # moved, and those need different fixes.
+        content_type = response.headers.get("content-type", "unknown")
+        preview = " ".join(response.text[:160].split())
         return FeedProbe(
             source,
             url,
             False,
             0,
             0,
-            "Reachable, but no entries parsed — the feed shape may have changed.",
+            f"Reachable but nothing parsed. Content-Type: {content_type}. "
+            f"Body starts: {preview}",
             elapsed,
         )
 
@@ -359,10 +370,16 @@ async def probe_news_sources(settings: Settings, db) -> dict:
                 },
             )
         )
-        probes.append(await probe_feed(client, "fda_press", fda.PRESS_FEED, index))
-        probes.append(await probe_feed(client, "halts", halts.FEED_URL, index))
-        probes.append(await probe_feed(client, "ema", clinical.EMA_FEED, index))
-        for wire in newswire.WIRES:
+        probes.append(await probe_feed(client, "fda_press", settings.fda_press_feed, index))
+        probes.append(await probe_feed(client, "halts", settings.halts_feed, index))
+        probes.append(await probe_feed(client, "ema", settings.ema_feed, index))
+        wires = newswire.WIRES
+        if settings.newswire_feeds:
+            wires = tuple(
+                newswire.Wire(key=f"custom_{i}", name=url, url=url)
+                for i, url in enumerate(settings.newswire_feeds)
+            )
+        for wire in wires:
             probes.append(await probe_feed(client, f"newswire:{wire.key}", wire.url, index))
 
     return {

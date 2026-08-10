@@ -4,7 +4,10 @@ from __future__ import annotations
 
 from datetime import timezone
 
-from app.services.feeds import parse_datetime, parse_feed, strip_html
+import httpx
+import pytest
+
+from app.services.feeds import fetch_feed, parse_datetime, parse_feed, strip_html
 
 RSS = """<?xml version="1.0"?>
 <rss version="2.0">
@@ -119,3 +122,33 @@ def test_strip_html_truncates_and_handles_empty():
     assert strip_html("x" * 5000, limit=100) == "x" * 100
     assert strip_html(None) is None
     assert strip_html("   ") is None
+
+
+# --- Redirects ---------------------------------------------------------------
+# httpx does not follow redirects by default, and several publishers answer a
+# 3xx for their canonical feed URL. Without following them the feed reads as
+# permanently empty and nothing says why.
+
+
+@pytest.mark.asyncio
+async def test_fetch_feed_follows_a_redirect():
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/rss.xml":
+            return httpx.Response(302, headers={"Location": "https://e.com/real.xml"})
+        return httpx.Response(200, text=RSS)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        entries = await fetch_feed(client, "https://e.com/rss.xml")
+
+    assert len(entries) == 2
+
+
+@pytest.mark.asyncio
+async def test_fetch_feed_returns_empty_on_a_network_error():
+    """A dead host must not raise into an ingest cycle covering five others."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("dns failure")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        assert await fetch_feed(client, "https://nowhere.invalid/rss") == []
