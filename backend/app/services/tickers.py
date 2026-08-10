@@ -12,11 +12,11 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Stock
-from app.services import markets
+from app.services import markets, sectors
 
 logger = logging.getLogger(__name__)
 
@@ -285,3 +285,26 @@ async def seed_stocks(db: AsyncSession) -> int:
         await db.commit()
         logger.info("Seeded %d new stocks", added)
     return added
+
+
+async def tickers_in_group(db: AsyncSession, group_key: str) -> list[str]:
+    """Active symbols belonging to an industry group.
+
+    Lets an ingest be aimed at "the data storage stocks" rather than at a
+    hand-typed list of symbols that goes stale the moment the universe grows.
+    Raises LookupError for an unknown group so a typo cannot quietly widen the
+    run to the whole universe.
+    """
+    members = sectors.sectors_in(group_key.strip().lower())
+    if not members:
+        raise LookupError(
+            f"Unknown group {group_key!r}. Known groups: "
+            + ", ".join(group.key for group in sectors.all_groups())
+        )
+
+    rows = await db.execute(
+        select(Stock.ticker)
+        .where(Stock.is_active.is_(True), func.lower(Stock.sector).in_(members))
+        .order_by(Stock.ticker)
+    )
+    return list(rows.scalars())

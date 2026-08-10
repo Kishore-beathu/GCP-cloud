@@ -19,7 +19,7 @@ from app.integrations.yahoo import count_unpriced, update_yahoo_prices
 from app.schemas import HealthResponse
 from app.security import require_auth
 from app.services.rescore import rescore_articles, stale_count
-from app.services.tickers import seed_stocks
+from app.services.tickers import seed_stocks, tickers_in_group
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["system"])
@@ -57,6 +57,26 @@ async def seed(db: AsyncSession = Depends(get_db)) -> dict:
     return {"stocks_added": added}
 
 
+async def _resolve_targets(
+    db: AsyncSession, tickers: list[str] | None, group: str | None
+) -> list[str] | None:
+    """Turn an optional group into a symbol list, keeping None = everything.
+
+    An unknown group is a 422 rather than a silent full-universe run: aiming an
+    ingest at "data_storge" and getting all 163 symbols back looks like success.
+    """
+    if not group:
+        return tickers
+    try:
+        members = await tickers_in_group(db, group)
+    except LookupError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if tickers:
+        wanted = {ticker.upper() for ticker in tickers}
+        return [symbol for symbol in members if symbol.upper() in wanted]
+    return members
+
+
 async def _run_sec_ingest(tickers: list[str] | None) -> None:
     """Run one SEC ingest on its own session, off the request lifecycle."""
     async with get_session_factory()() as session:
@@ -72,10 +92,15 @@ async def trigger_sec_ingest(
     ticker: list[str] | None = Query(
         default=None, description="Repeat to limit the run to specific symbols"
     ),
+    group: str | None = Query(
+        default=None, description="Industry group, e.g. data_storage or ai"
+    ),
+    db: AsyncSession = Depends(get_db),
 ) -> dict:
     """Kick off an SEC EDGAR pull. Returns immediately; the work runs in the background."""
-    background.add_task(_run_sec_ingest, ticker)
-    return {"status": "accepted", "tickers": ticker or "all active"}
+    targets = await _resolve_targets(db, ticker, group)
+    background.add_task(_run_sec_ingest, targets)
+    return {"status": "accepted", "symbols": len(targets) if targets else "all active"}
 
 
 async def _run_finnhub_ingest(tickers: list[str] | None) -> None:
@@ -92,10 +117,15 @@ async def trigger_finnhub_ingest(
     ticker: list[str] | None = Query(
         default=None, description="Repeat to limit the run to specific symbols"
     ),
+    group: str | None = Query(
+        default=None, description="Industry group, e.g. data_storage or ai"
+    ),
+    db: AsyncSession = Depends(get_db),
 ) -> dict:
     """Kick off a Finnhub news pull. No-op (with a log line) when the key is missing."""
-    background.add_task(_run_finnhub_ingest, ticker)
-    return {"status": "accepted", "tickers": ticker or "all active"}
+    targets = await _resolve_targets(db, ticker, group)
+    background.add_task(_run_finnhub_ingest, targets)
+    return {"status": "accepted", "symbols": len(targets) if targets else "all active"}
 
 
 async def _run_quote_update(tickers: list[str] | None) -> None:
@@ -157,14 +187,19 @@ async def _run_finnhub_quotes(tickers: list[str] | None) -> None:
 async def trigger_finnhub_quotes(
     background: BackgroundTasks,
     ticker: list[str] | None = Query(default=None, description="Limit to these symbols"),
+    group: str | None = Query(
+        default=None, description="Industry group, e.g. data_storage or ai"
+    ),
+    db: AsyncSession = Depends(get_db),
 ) -> dict:
     """Populate the watchlist with prices using the Finnhub key.
 
     Separate from `/admin/ingest/prices`, which uses Alpha Vantage and is
     limited to roughly 25 calls a day on a free plan.
     """
-    background.add_task(_run_finnhub_quotes, ticker)
-    return {"status": "accepted", "tickers": ticker or "all active"}
+    targets = await _resolve_targets(db, ticker, group)
+    background.add_task(_run_finnhub_quotes, targets)
+    return {"status": "accepted", "symbols": len(targets) if targets else "all active"}
 
 
 @router.post(
@@ -174,6 +209,9 @@ async def trigger_finnhub_quotes(
 )
 async def trigger_yahoo_prices(
     ticker: list[str] | None = Query(default=None, description="Limit to these symbols"),
+    group: str | None = Query(
+        default=None, description="Industry group, e.g. data_storage or ai"
+    ),
     range_: str = Query(
         default="3mo",
         alias="range",
@@ -191,8 +229,9 @@ async def trigger_yahoo_prices(
     including how many symbols Yahoo had nothing for. With the default
     `only_missing=true` this targets exactly the rows still showing a dash.
     """
+    targets = await _resolve_targets(db, ticker, group)
     remaining_before = await count_unpriced(db)
-    result = await update_yahoo_prices(db, ticker, range_, only_missing)
+    result = await update_yahoo_prices(db, targets, range_, only_missing)
     return {
         **result,
         "symbols_without_prices_before": remaining_before,

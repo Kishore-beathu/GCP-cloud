@@ -80,8 +80,8 @@ universe — no code change needed.
 | POST | `/portfolios/{id}/simulate` | Replay the sentiment strategy over stored history |
 | GET | `/jobs/status` | Scheduler state and next run times |
 | POST | `/admin/seed` | Re-run universe seeding |
-| POST | `/admin/ingest/sec` | Trigger an SEC pull now (optional `?ticker=MRNA&ticker=PFE`) |
-| POST | `/admin/ingest/finnhub` | Trigger a Finnhub news pull now |
+| POST | `/admin/ingest/sec` | Trigger an SEC pull now (`?ticker=MRNA` or `?group=data_storage`) |
+| POST | `/admin/ingest/finnhub` | Trigger a Finnhub news pull now (`?group=ai` to target one industry) |
 | POST | `/admin/ingest/quotes` | Refresh prices from Finnhub — the practical price source for US symbols |
 | POST | `/admin/ingest/yahoo` | Load price + history for symbols no keyed vendor covers (`?range=1y&only_missing=true`) |
 | POST | `/admin/ingest/prices` | Trigger an Alpha Vantage quote refresh now (~25 calls/day on a free plan) |

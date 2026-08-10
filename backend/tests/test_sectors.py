@@ -151,3 +151,84 @@ async def test_unknown_group_is_rejected_rather_than_ignored(client, seeded_stoc
 
     assert response.status_code == 422
     assert "/stocks/sectors" in response.json()["detail"]
+
+
+# --- Group-targeted ingestion -----------------------------------------------
+# "Get me news for the data storage stocks" should be one call, not a
+# hand-typed symbol list that goes stale the moment the universe grows.
+
+
+@pytest.mark.asyncio
+async def test_tickers_in_group_returns_only_that_group(db, seeded_stocks):
+    from app.models import Stock
+    from app.services.tickers import tickers_in_group
+
+    db.add_all(
+        [
+            Stock(ticker="WDC", company_name="Western Digital", sector="storage_hardware"),
+            Stock(ticker="SNOW", company_name="Snowflake", sector="data_platform"),
+            Stock(ticker="NVDA", company_name="NVIDIA", sector="ai_semiconductor"),
+        ]
+    )
+    await db.commit()
+
+    storage = await tickers_in_group(db, "data_storage")
+
+    assert storage == ["SNOW", "WDC"]  # sorted, and no AI or pharma names
+
+
+@pytest.mark.asyncio
+async def test_tickers_in_group_ignores_inactive_symbols(db, seeded_stocks):
+    from app.models import Stock
+    from app.services.tickers import tickers_in_group
+
+    db.add(
+        Stock(
+            ticker="QTM",
+            company_name="Quantum Corp",
+            sector="storage_hardware",
+            is_active=False,
+        )
+    )
+    await db.commit()
+
+    assert await tickers_in_group(db, "data_storage") == []
+
+
+@pytest.mark.asyncio
+async def test_tickers_in_group_rejects_an_unknown_group(db, seeded_stocks):
+    from app.services.tickers import tickers_in_group
+
+    with pytest.raises(LookupError):
+        await tickers_in_group(db, "data_storge")
+
+
+@pytest.mark.asyncio
+async def test_ingest_can_be_aimed_at_a_group(client, db, seeded_stocks):
+    from app.models import Stock
+
+    db.add(Stock(ticker="WDC", company_name="Western Digital", sector="storage_hardware"))
+    await db.commit()
+
+    response = await client.post("/admin/ingest/finnhub?group=data_storage")
+
+    assert response.status_code == 202
+    # One storage symbol, not the whole universe.
+    assert response.json()["symbols"] == 1
+
+
+@pytest.mark.asyncio
+async def test_ingest_with_a_misspelled_group_is_rejected(client, seeded_stocks):
+    """Silently running the full universe would look like the filter worked."""
+    response = await client.post("/admin/ingest/finnhub?group=data_storge")
+
+    assert response.status_code == 422
+    assert "Unknown group" in response.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_ingest_without_a_group_still_means_everything(client, seeded_stocks):
+    response = await client.post("/admin/ingest/finnhub")
+
+    assert response.status_code == 202
+    assert response.json()["symbols"] == "all active"
