@@ -133,6 +133,16 @@ class Settings(BaseSettings):
     finnhub_quote_interval_seconds: int = 60
     finnhub_quote_batch_size: int = 50
 
+    # --- Yahoo prices --------------------------------------------------------
+    # The only configured source that prices the European and Asia-Pacific
+    # listings; one call returns the current price and the daily history. The
+    # endpoint is undocumented and unguaranteed — see app/integrations/yahoo.py
+    # — so it is a clearly labelled fallback rather than a licensed feed.
+    yahoo_prices_enabled: bool = True
+    yahoo_price_interval_minutes: int = 30
+    yahoo_price_range: str = "3mo"
+    yahoo_price_batch_size: int = 30
+
     # --- Finnhub live trade stream ------------------------------------------
     # The one true real-time source: a WebSocket carrying trade ticks. Only
     # runs when FINNHUB_API_KEY is set.

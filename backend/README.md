@@ -80,7 +80,8 @@ universe — no code change needed.
 | POST | `/admin/seed` | Re-run universe seeding |
 | POST | `/admin/ingest/sec` | Trigger an SEC pull now (optional `?ticker=MRNA&ticker=PFE`) |
 | POST | `/admin/ingest/finnhub` | Trigger a Finnhub news pull now |
-| POST | `/admin/ingest/quotes` | Refresh prices from Finnhub — the practical price source |
+| POST | `/admin/ingest/quotes` | Refresh prices from Finnhub — the practical price source for US symbols |
+| POST | `/admin/ingest/yahoo` | Load price + history for symbols no keyed vendor covers (`?range=1y&only_missing=true`) |
 | POST | `/admin/ingest/prices` | Trigger an Alpha Vantage quote refresh now (~25 calls/day on a free plan) |
 | POST | `/admin/backfill/prices` | Load daily price history for one ticker (`?ticker=MRNA&outputsize=full`) |
 | GET | `/admin/diagnose/sources` | Probe every vendor and report what it said — run this first when the dashboard is empty |

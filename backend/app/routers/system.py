@@ -15,6 +15,7 @@ from app.integrations.alpha_vantage import backfill_daily, update_quotes
 from app.integrations.finnhub import ingest_finnhub_news, update_finnhub_quotes
 from app.integrations.finnhub_stream import finnhub_stream
 from app.integrations.sec import ingest_sec_filings
+from app.integrations.yahoo import count_unpriced, update_yahoo_prices
 from app.schemas import HealthResponse
 from app.security import require_auth
 from app.services.rescore import rescore_articles, stale_count
@@ -164,6 +165,39 @@ async def trigger_finnhub_quotes(
     """
     background.add_task(_run_finnhub_quotes, ticker)
     return {"status": "accepted", "tickers": ticker or "all active"}
+
+
+@router.post(
+    "/admin/ingest/yahoo",
+    summary="Load prices and history for symbols no keyed vendor covers",
+    dependencies=[Depends(require_auth)],
+)
+async def trigger_yahoo_prices(
+    ticker: list[str] | None = Query(default=None, description="Limit to these symbols"),
+    range_: str = Query(
+        default="3mo",
+        alias="range",
+        pattern="^(1mo|3mo|6mo|1y|2y|5y|10y|max)$",
+        description="History window loaded per symbol",
+    ),
+    only_missing: bool = Query(
+        default=True, description="Only symbols with no stored price at all"
+    ),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Fill in the European and Asia-Pacific listings.
+
+    Runs inline rather than in the background so the caller sees the counts —
+    including how many symbols Yahoo had nothing for. With the default
+    `only_missing=true` this targets exactly the rows still showing a dash.
+    """
+    remaining_before = await count_unpriced(db)
+    result = await update_yahoo_prices(db, ticker, range_, only_missing)
+    return {
+        **result,
+        "symbols_without_prices_before": remaining_before,
+        "symbols_without_prices_after": await count_unpriced(db),
+    }
 
 
 @router.get(

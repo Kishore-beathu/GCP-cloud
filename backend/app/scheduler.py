@@ -17,6 +17,7 @@ from app.config import get_settings
 from app.database import get_session_factory
 from app.integrations.alpha_vantage import update_quotes
 from app.integrations.finnhub import ingest_finnhub_news, update_finnhub_quotes
+from app.integrations.yahoo import update_yahoo_prices
 from app.integrations.finnhub_stream import finnhub_stream
 from app.integrations.sec import ingest_sec_filings
 from app.models import NewsArticle, Stock, StockPrice
@@ -33,6 +34,7 @@ _sec_cursor = 0
 _finnhub_cursor = 0
 _quote_cursor = 0
 _finnhub_quote_cursor = 0
+_yahoo_cursor = 0
 
 
 async def _active_tickers(db) -> list[str]:
@@ -148,6 +150,28 @@ async def finnhub_quote_job() -> None:
             logger.info("Finnhub quote job: %s", result)
 
 
+async def yahoo_price_job() -> None:
+    """Load prices and history for the symbols no keyed vendor covers.
+
+    Runs on a slow interval: one call carries a full history window, so there
+    is nothing to gain from polling it like a quote feed, and it is a courtesy
+    to an endpoint nobody is paying for.
+    """
+    global _yahoo_cursor
+    settings = get_settings()
+
+    async with get_session_factory()() as db:
+        tickers = await _active_tickers(db)
+        if not tickers:
+            return
+
+        size = max(1, settings.yahoo_price_batch_size)
+        batch, _yahoo_cursor = _next_batch(tickers, _yahoo_cursor, size)
+        result = await update_yahoo_prices(db, batch)
+        if result["inserted"] or result["updated"]:
+            logger.info("Yahoo price job: %s", result)
+
+
 async def price_push_job() -> None:
     """Push the latest stored close to every subscribed WebSocket client.
 
@@ -258,6 +282,16 @@ def start_scheduler() -> AsyncIOScheduler | None:
             IntervalTrigger(seconds=settings.finnhub_quote_interval_seconds),
             id="finnhub_quotes",
             name="Finnhub quote refresh",
+            max_instances=1,
+            coalesce=True,
+        )
+
+    if settings.yahoo_prices_enabled:
+        scheduler.add_job(
+            yahoo_price_job,
+            IntervalTrigger(minutes=settings.yahoo_price_interval_minutes),
+            id="yahoo_prices",
+            name="Yahoo price and history load",
             max_instances=1,
             coalesce=True,
         )
