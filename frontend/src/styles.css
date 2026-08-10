@@ -153,7 +153,12 @@ main {
 
 .watchlist .row {
   display: grid;
-  grid-template-columns: 52px 1fr 56px 52px;
+  /* The ticker column sizes to its content: a fixed width fitted to US symbols
+     overflows on Asian listings like 068270.KS, printing the ticker on top of
+     the company name. minmax(0, 1fr) lets the name column shrink instead —
+     a bare 1fr refuses to go below its content width and the ellipsis on
+     .name never engages. */
+  grid-template-columns: minmax(52px, max-content) minmax(0, 1fr) 56px 52px;
   gap: 6px;
   align-items: center;
   width: 100%;
