@@ -43,6 +43,9 @@ class StockBase(ORMModel):
 
 class StockOut(StockBase):
     id: int
+    # Derived from `sector`, not stored: the grouping is a presentation choice
+    # and re-grouping should never need a migration. See services/sectors.py.
+    sector_group: str = "other"
     # The last stored close, so a list renders prices immediately rather than
     # waiting on a WebSocket push that only covers the subscribed few.
     last_price: float | None = None

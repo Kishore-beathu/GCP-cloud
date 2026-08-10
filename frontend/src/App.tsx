@@ -1,6 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 
-import { getNews, getSession, getStocks, logout, onSessionExpired } from './api/client'
+import {
+  getNews,
+  getSectorGroups,
+  getSession,
+  getStocks,
+  logout,
+  onSessionExpired,
+} from './api/client'
 import { AlertToasts } from './components/AlertToasts'
 import { AlertsPanel } from './components/AlertsPanel'
 import { BacktestPanel } from './components/BacktestPanel'
@@ -39,7 +46,12 @@ export default function App() {
 
 function Dashboard({ onSignOut }: { onSignOut: () => void }) {
   const [region, setRegion] = useState('')
-  const stocks = useAsync(() => getStocks({ region: region || undefined }), [region])
+  const [group, setGroup] = useState('')
+  const stocks = useAsync(
+    () => getStocks({ region: region || undefined, group: group || undefined }),
+    [region, group],
+  )
+  const sectorGroups = useAsync(() => getSectorGroups(), [])
   const [selected, setSelected] = useState<string | null>(null)
   const [filter, setFilter] = useState('')
 
@@ -99,6 +111,7 @@ function Dashboard({ onSignOut }: { onSignOut: () => void }) {
       <div className="layout">
         <Watchlist
           stocks={stocks.data ?? []}
+          groups={sectorGroups.data?.groups ?? []}
           selected={active}
           prices={prices}
           onSelect={setSelected}
@@ -106,6 +119,8 @@ function Dashboard({ onSignOut }: { onSignOut: () => void }) {
           onFilter={setFilter}
           region={region}
           onRegion={setRegion}
+          group={group}
+          onGroup={setGroup}
         />
 
         <main>

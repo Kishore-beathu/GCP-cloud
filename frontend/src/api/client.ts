@@ -13,6 +13,7 @@ import type {
   Price,
   Sentiment,
   SimulationResponse,
+  SectorGroupInfo,
   Stock,
   StockDetail,
   Trade,
@@ -120,7 +121,13 @@ export function getNews(filters: NewsFilters = {}): Promise<NewsArticle[]> {
   return request(`/news?${params}`)
 }
 
-export function getStocks(filters: { region?: string; q?: string } = {}): Promise<Stock[]> {
+export function getSectorGroups(): Promise<{ total: number; groups: SectorGroupInfo[] }> {
+  return request('/stocks/sectors')
+}
+
+export function getStocks(
+  filters: { region?: string; q?: string; group?: string } = {},
+): Promise<Stock[]> {
   const params = new URLSearchParams({ limit: '1000' })
   for (const [key, value] of Object.entries(filters)) {
     if (value) params.set(key, value)

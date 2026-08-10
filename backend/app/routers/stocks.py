@@ -12,7 +12,7 @@ from app.database import get_db
 from app.integrations.yahoo import INTRADAY_WINDOWS, YahooUnavailable, fetch_intraday
 from app.models import NewsArticle, SentimentScore, Stock, StockPrice
 from app.routers.news import to_news_out
-from app.services import markets
+from app.services import markets, sectors
 from app.schemas import PriceOut, StockDetail, StockOut
 
 router = APIRouter(prefix="/stocks", tags=["stocks"])
@@ -25,6 +25,10 @@ async def list_stocks(
         description="Free text over ticker and company name, e.g. 'novo' or '.T'",
     ),
     sector: str | None = Query(default=None, description="pharma, biotech, cdmo, …"),
+    group: str | None = Query(
+        default=None,
+        description="Industry group: pharma_life_sciences, ai, data_storage",
+    ),
     region: str | None = Query(
         default=None, description="north_america, europe, asia_pacific"
     ),
@@ -52,6 +56,14 @@ async def list_stocks(
         )
     if sector:
         query = query.where(func.lower(Stock.sector) == sector.strip().lower())
+    if group:
+        members = sectors.sectors_in(group.strip().lower())
+        if not members:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Unknown group {group!r}. Try GET /stocks/sectors.",
+            )
+        query = query.where(func.lower(Stock.sector).in_(members))
     if region:
         query = query.where(func.lower(Stock.region) == region.strip().lower())
     if country:
@@ -104,6 +116,7 @@ async def _with_latest_prices(db: AsyncSession, stocks: list[Stock]) -> list[Sto
     for stock in stocks:
         rows = sorted(recent.get(stock.id, []), key=lambda row: row.rank)
         item = StockOut.model_validate(stock)
+        item.sector_group = sectors.group_for(stock.sector)
         if rows:
             latest = rows[0]
             item.last_price = latest.close
@@ -114,6 +127,37 @@ async def _with_latest_prices(db: AsyncSession, stocks: list[Stock]) -> list[Sto
                 )
         out.append(item)
     return out
+
+
+@router.get("/sectors", summary="Industry groups, with the sectors and counts in each")
+async def list_sector_groups(db: AsyncSession = Depends(get_db)) -> dict:
+    """The grouping the watchlist navigates by.
+
+    Counts are computed from the tracked universe rather than hard-coded, so a
+    group that has quietly emptied is visible instead of implied.
+    """
+    per_sector = dict(
+        (
+            await db.execute(
+                select(Stock.sector, func.count(Stock.id))
+                .where(Stock.is_active.is_(True))
+                .group_by(Stock.sector)
+            )
+        ).all()
+    )
+
+    counts: dict[str, int] = {}
+    for sector_name, count in per_sector.items():
+        key = sectors.group_for(sector_name)
+        counts[key] = counts.get(key, 0) + count
+
+    groups = []
+    for group in sectors.all_groups():
+        tracked = counts.get(group.key, 0)
+        if tracked or group.key != sectors.OTHER.key:
+            groups.append({**sectors.describe(group), "tracked_symbols": tracked})
+
+    return {"total": sum(counts.values()), "groups": groups}
 
 
 @router.get("/markets", summary="Venues in the universe, with session state")

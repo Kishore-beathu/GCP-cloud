@@ -555,3 +555,35 @@ code {
 .watchlist select.search {
   width: calc(100% - 20px);
 }
+
+/* --- Watchlist industry groups --------------------------------------------*/
+
+.watchlist li.group {
+  list-style: none;
+}
+
+.watchlist li.group > ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.group-heading {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  margin: 10px 0 4px;
+  padding: 4px 8px;
+  /* Opaque, not translucent: rows scroll underneath this. */
+  background: var(--panel);
+  border-bottom: 1px solid var(--grid);
+  color: var(--text-dim);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.watchlist li.group:first-child .group-heading {
+  margin-top: 0;
+}

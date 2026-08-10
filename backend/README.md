@@ -63,7 +63,8 @@ universe — no code change needed.
 |--------|------|---------|
 | GET | `/health` | Liveness + database probe |
 | GET | `/news` | Scored news feed; filter by `ticker`, `sentiment`, `event_type`, `source`, `min_score`, `since_days` |
-| GET | `/stocks` | Search the universe: `q`, `sector`, `region`, `country`, `mic`, `currency` |
+| GET | `/stocks` | Search the universe: `q`, `sector`, `group`, `region`, `country`, `mic`, `currency` |
+| GET | `/stocks/sectors` | Industry groups, their sectors, and how many symbols each holds |
 | GET | `/stocks/markets` | Venues tracked, per-region counts, and which are open now |
 | GET | `/stocks/{ticker}` | Detail: latest price + recent scored news |
 | GET | `/stocks/{ticker}/intraday` | Intraday bars for a short window (`?window=1h`, `1d`, `1w`) |

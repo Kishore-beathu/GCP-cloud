@@ -44,6 +44,17 @@ export interface NewsArticle {
 
 export type Region = 'north_america' | 'europe' | 'asia_pacific'
 
+/** Derived from `sector` on the server — see backend/app/services/sectors.py. */
+export type SectorGroup = 'pharma_life_sciences' | 'ai' | 'data_storage' | 'other'
+
+export interface SectorGroupInfo {
+  key: SectorGroup
+  label: string
+  description: string
+  sectors: string[]
+  tracked_symbols: number
+}
+
 export interface Stock {
   id: number
   ticker: string
@@ -56,6 +67,7 @@ export interface Stock {
   /** ISO 4217, except 'GBp' for London, whose prices are quoted in pence. */
   currency: string | null
   market_cap: number | null
+  sector_group: SectorGroup
   /** Last stored close. Live ticks override it, but this fills the rest. */
   last_price: number | null
   last_change_pct: number | null

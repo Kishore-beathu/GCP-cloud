@@ -70,14 +70,54 @@ SEED_TICKERS: tuple[TickerSeed, ...] = (
     TickerSeed("IQV", "IQVIA Holdings Inc.", "cro", "NYSE"),
     TickerSeed("ICLR", "ICON plc", "cro", "NASDAQ"),
     TickerSeed("MEDP", "Medpace Holdings", "cro", "NASDAQ"),
-    # AI / healthcare technology
-    TickerSeed("NVDA", "NVIDIA Corporation", "ai_tech", "NASDAQ"),
+    # --- Artificial intelligence ---------------------------------------------
+    # Platform and model owners.
+    TickerSeed("NVDA", "NVIDIA Corporation", "ai_semiconductor", "NASDAQ"),
     TickerSeed("MSFT", "Microsoft Corporation", "ai_tech", "NASDAQ"),
     TickerSeed("GOOGL", "Alphabet Inc.", "ai_tech", "NASDAQ"),
-    TickerSeed("PLTR", "Palantir Technologies", "ai_tech", "NASDAQ"),
+    TickerSeed("AMZN", "Amazon.com Inc.", "ai_tech", "NASDAQ"),
+    TickerSeed("META", "Meta Platforms Inc.", "ai_tech", "NASDAQ"),
+    TickerSeed("PLTR", "Palantir Technologies", "ai_software", "NASDAQ"),
+    TickerSeed("NOW", "ServiceNow Inc.", "ai_software", "NYSE"),
+    TickerSeed("CRM", "Salesforce Inc.", "ai_software", "NYSE"),
+    # The silicon the models train and run on. TSM fabricates most of it and
+    # ASML is the sole supplier of the EUV machines that make it possible, so
+    # both trade on AI capital expenditure rather than on their own end markets.
+    TickerSeed("AMD", "Advanced Micro Devices", "ai_semiconductor", "NASDAQ"),
+    TickerSeed("AVGO", "Broadcom Inc.", "ai_semiconductor", "NASDAQ"),
+    TickerSeed("TSM", "Taiwan Semiconductor (ADR)", "ai_semiconductor", "NYSE"),
+    TickerSeed("ASML", "ASML Holding (ADR)", "ai_semiconductor", "NASDAQ"),
+    TickerSeed("ARM", "Arm Holdings (ADR)", "ai_semiconductor", "NASDAQ"),
+    TickerSeed("MRVL", "Marvell Technology", "ai_semiconductor", "NASDAQ"),
+    TickerSeed("ASML.AS", "ASML Holding NV", "ai_semiconductor", "Euronext Amsterdam"),
+    TickerSeed("2330.TW", "Taiwan Semiconductor Manufacturing", "ai_semiconductor", "TWSE"),
+    # AI-first drug discovery: these trade on model results and compute
+    # partnerships rather than on a marketed product, so they group with AI.
     TickerSeed("TEM", "Tempus AI Inc.", "ai_health", "NASDAQ"),
     TickerSeed("SDGR", "Schrodinger Inc.", "ai_health", "NASDAQ"),
     TickerSeed("RXRX", "Recursion Pharmaceuticals", "ai_health", "NASDAQ"),
+    TickerSeed("ABSI", "Absci Corporation", "ai_health", "NASDAQ"),
+    TickerSeed("CRSP", "CRISPR Therapeutics AG", "biotech", "NASDAQ"),
+    # --- Data storage and infrastructure --------------------------------------
+    # Drives and memory: the physical layer.
+    TickerSeed("WDC", "Western Digital Corporation", "storage_hardware", "NASDAQ"),
+    TickerSeed("STX", "Seagate Technology Holdings", "storage_hardware", "NASDAQ"),
+    TickerSeed("NTAP", "NetApp Inc.", "storage_hardware", "NASDAQ"),
+    TickerSeed("PSTG", "Pure Storage Inc.", "storage_hardware", "NYSE"),
+    TickerSeed("DELL", "Dell Technologies Inc.", "storage_hardware", "NYSE"),
+    TickerSeed("HPE", "Hewlett Packard Enterprise", "storage_hardware", "NYSE"),
+    TickerSeed("MU", "Micron Technology Inc.", "memory", "NASDAQ"),
+    TickerSeed("000660.KS", "SK hynix Inc.", "memory", "KRX"),
+    TickerSeed("2408.TW", "Nanya Technology Corporation", "memory", "TWSE"),
+    # Data platforms: where the data is queried rather than kept.
+    TickerSeed("SNOW", "Snowflake Inc.", "data_platform", "NYSE"),
+    TickerSeed("MDB", "MongoDB Inc.", "data_platform", "NASDAQ"),
+    TickerSeed("CFLT", "Confluent Inc.", "data_platform", "NASDAQ"),
+    TickerSeed("ORCL", "Oracle Corporation", "data_platform", "NYSE"),
+    TickerSeed("TDC", "Teradata Corporation", "data_platform", "NYSE"),
+    # The buildings. REITs, so they trade on leasing and power, not on chips.
+    TickerSeed("EQIX", "Equinix Inc.", "data_center", "NASDAQ"),
+    TickerSeed("DLR", "Digital Realty Trust", "data_center", "NYSE"),
     TickerSeed("VEEV", "Veeva Systems Inc.", "health_it", "NYSE"),
     TickerSeed("DXCM", "DexCom Inc.", "medtech", "NASDAQ"),
     TickerSeed("ISRG", "Intuitive Surgical", "medtech", "NASDAQ"),
