@@ -47,10 +47,11 @@ Its real advantages are ones the large platforms structurally cannot offer:
 
 Ranked by how much they limit the product today:
 
-1. **No fundamentals or estimates.** You can see that a stock had good news;
-   you cannot see whether it is expensive. Finnhub's `/stock/metric` and
-   `/stock/recommendation` endpoints would close much of this with the key you
-   already have.
+1. **No fundamentals or estimates.** You can see that a stock had good news
+   and rising price; you cannot see whether it is expensive. This is now the
+   single largest gap, because it is a whole missing pillar of the score rather
+   than a missing feature. Finnhub's `/stock/metric` and `/stock/recommendation`
+   endpoints would close much of it with the key you already have.
 2. **Filing metadata, not filing text.** The platform reads *that* an 8-K was
    filed and which items it reported, not what it said. Fetching the primary
    document and scoring its text is the single biggest signal upgrade
@@ -98,6 +99,44 @@ This is also why the seed universe carries both the ADR and the home line for
 the big names — `NVO` and `NOVO-B.CO`, `AZN` and `AZN.L`. The ADR brings SEC
 filings and US-hours liquidity; the home line brings the domestic session and
 local currency.
+
+## Against Danelfin specifically
+
+Danelfin is the closest comparison to what this platform now does: an AI score
+per stock, decomposed into pillars, with the features that drove it shown, and
+a published track record. Same caveat as everywhere else on this page — I could
+not reach their site while writing this, so treat the left column as a
+description of the *category* rather than a current fact sheet.
+
+| | Danelfin (as I understand it) | This platform |
+|---|---|---|
+| Score | AI Score 1–10, stated as probability of beating the market over ~3 months | 0–100 percentile rank. **No probability claim** |
+| Pillars | Fundamental, technical, sentiment | Technical, sentiment. **No fundamentals** |
+| Features | ~900 per stock per day, machine-learned weights | 9 named factors, hand-set weights, arithmetic shown in full |
+| Explainability | Top features driving the score | Every factor, its raw value, percentile, weight and contribution |
+| Track record | Published, multi-year, third-party visible | `GET /scores/validation` measured on *your* data, one period, reported with its caveats |
+| Universe | ~1,000 US + ~600 European | 163, whatever you seed |
+| Coverage honesty | — | `coverage` field states what share of intended inputs each score used |
+| Cost | Subscription | Infrastructure + data fees |
+
+**Where Danelfin is straightforwardly better.** Fundamentals are a whole
+pillar this has nothing for. Machine-learned weights across hundreds of
+features will capture interactions that nine hand-weighted factors cannot. A
+published multi-year track record is worth far more than a single-period test
+on one user's database. Their universe is an order of magnitude larger.
+
+**Where this is better, and it is not nothing.** The score is fully auditable
+— not "here are the top features" but the entire calculation, reproducible by
+hand from the response. It is tuned to a sector: the lexicon knows what a
+complete response letter and a CHMP opinion are. And it makes no forecast it
+cannot support: a 1–10 score presented as a probability is a calibration claim,
+and calibration is the hardest thing in this field to get right and the easiest
+to assert.
+
+**The honest summary.** If you want a researched, validated score across a
+large universe, buy one. What this gives you is a score you can take apart,
+over a universe you chose, on data you own — and a validation endpoint that
+will tell you when it is not working.
 
 ## What I would do next, in order
 

@@ -18,7 +18,17 @@ from app.database import (
 )
 from app.integrations.finnhub_stream import finnhub_stream
 from app.logging_config import configure_logging
-from app.routers import alerts, auth, backtest, news, portfolios, stocks, system, ws
+from app.routers import (
+    alerts,
+    auth,
+    backtest,
+    news,
+    portfolios,
+    scores,
+    stocks,
+    system,
+    ws,
+)
 from app.scheduler import shutdown_scheduler, start_scheduler
 from app.security import auth_enabled, require_auth, require_secure_configuration
 from app.services.tickers import seed_stocks
@@ -105,6 +115,7 @@ def create_app() -> FastAPI:
     app.include_router(stocks.router, dependencies=[Depends(require_auth)])
     app.include_router(alerts.router, dependencies=[Depends(require_auth)])
     app.include_router(backtest.router, dependencies=[Depends(require_auth)])
+    app.include_router(scores.router, dependencies=[Depends(require_auth)])
     app.include_router(portfolios.router, dependencies=[Depends(require_auth)])
     # The WebSocket authenticates in its handshake: browsers cannot set headers.
     app.include_router(ws.router)

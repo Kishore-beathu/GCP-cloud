@@ -72,6 +72,9 @@ universe — no code change needed.
 | GET | `/alerts` | List alerts; `/alerts/history` shows firings |
 | DELETE | `/alerts/{id}` | Deactivate (history is kept) |
 | GET | `/backtest?ticker=MRNA&days=90` | Price impact by event type + signal accuracy |
+| GET | `/scores` | Every symbol ranked, with each factor's value, percentile and contribution (`?group=ai&limit=10`) |
+| GET | `/scores/{ticker}` | One symbol's score and full factor breakdown |
+| GET | `/scores/validation` | Did a high score precede a better return, on your data? |
 | GET | `/portfolios` | List paper-trading portfolios |
 | POST | `/portfolios` | Create one (`{"name": "...", "starting_cash": 100000}`) |
 | GET | `/portfolios/{id}` | Positions and valuation at latest prices |

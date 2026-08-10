@@ -100,6 +100,38 @@ export interface Intraday {
   points: IntradayPoint[]
 }
 
+export interface ScoreFactor {
+  key: string
+  label: string
+  value: number | null
+  percentile: number | null
+  weight: number
+  contribution: number
+  explanation: string
+}
+
+export interface StockScore {
+  ticker: string
+  company_name: string
+  sector_group: SectorGroup
+  score: number
+  technical_score: number | null
+  sentiment_score: number | null
+  rank: number
+  universe_size: number
+  sector_rank: number
+  sector_size: number
+  coverage: number
+  news_count_30d: number
+  factors: ScoreFactor[]
+}
+
+export interface ScoreList {
+  generated_for: number
+  method: string
+  scores: StockScore[]
+}
+
 export interface StockDetail extends Stock {
   latest_price: Price | null
   recent_news: NewsArticle[]

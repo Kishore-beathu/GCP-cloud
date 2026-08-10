@@ -13,8 +13,10 @@ import type {
   Price,
   Sentiment,
   SimulationResponse,
+  ScoreList,
   SectorGroupInfo,
   Stock,
+  StockScore,
   StockDetail,
   Trade,
   TradeSide,
@@ -145,6 +147,17 @@ export function getPrices(ticker: string, days = 90): Promise<Price[]> {
 
 export function getIntraday(ticker: string, window: IntradayWindow): Promise<Intraday> {
   return request(`/stocks/${encodeURIComponent(ticker)}/intraday?window=${window}`)
+}
+
+export function getScores(params: { group?: string; limit?: number } = {}): Promise<ScoreList> {
+  const query = new URLSearchParams()
+  if (params.group) query.set('group', params.group)
+  query.set('limit', String(params.limit ?? 10))
+  return request(`/scores?${query}`)
+}
+
+export function getScore(ticker: string): Promise<StockScore> {
+  return request(`/scores/${encodeURIComponent(ticker)}`)
 }
 
 export function getAlerts(): Promise<Alert[]> {

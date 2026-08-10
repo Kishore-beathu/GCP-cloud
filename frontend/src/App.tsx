@@ -14,6 +14,7 @@ import { BacktestPanel } from './components/BacktestPanel'
 import { NewsFeed } from './components/NewsFeed'
 import { PortfolioPanel } from './components/PortfolioPanel'
 import { PriceChart } from './components/PriceChart'
+import { ScorePanel } from './components/ScorePanel'
 import { SignIn } from './components/SignIn'
 import { Watchlist } from './components/Watchlist'
 import { ChangeText } from './components/badges'
@@ -136,6 +137,7 @@ function Dashboard({ onSignOut }: { onSignOut: () => void }) {
           <div className="columns">
             <NewsFeed ticker={active} />
             <div className="stack">
+              <ScorePanel group={group} onSelect={setSelected} selected={active} />
               <AlertsPanel tickers={allTickers} defaultTicker={active} />
               <PortfolioPanel tickers={allTickers} defaultTicker={active} />
               {active && <BacktestPanel ticker={active} />}
