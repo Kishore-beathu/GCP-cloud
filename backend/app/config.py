@@ -133,6 +133,49 @@ class Settings(BaseSettings):
     finnhub_quote_interval_seconds: int = 60
     finnhub_quote_batch_size: int = 50
 
+    # --- Additional news sources ---------------------------------------------
+    # EDGAR's current-filings feed covers every registrant within about a
+    # minute, where the per-company walk takes up to its full interval. Both
+    # run: the feed is fast, the walk backfills anything it missed.
+    edgar_firehose_enabled: bool = True
+    edgar_firehose_interval_minutes: int = 2
+    edgar_firehose_lookback_minutes: int = 30
+
+    # FDA approvals, recalls and enforcement. No key; openFDA rate-limits
+    # anonymous callers, which a 15-minute job stays well inside.
+    fda_enabled: bool = True
+    fda_interval_minutes: int = 15
+    fda_lookback_days: int = 3
+    fda_batch_size: int = 100
+
+    # Per-symbol headlines, and the only free news source covering the
+    # European and Asia-Pacific listings.
+    yahoo_news_enabled: bool = True
+    yahoo_news_interval_minutes: int = 10
+    yahoo_news_lookback_days: int = 3
+    yahoo_news_batch_size: int = 40
+
+    # Newswires carry a release at issue, before aggregators pick it up — and
+    # carry every other issuer's releases too. The noisiest source here.
+    newswire_enabled: bool = True
+    newswire_interval_minutes: int = 5
+    newswire_lookback_hours: int = 6
+
+    # A T1 halt says an announcement is imminent, which nothing else can.
+    halts_enabled: bool = True
+    halts_interval_minutes: int = 2
+    halts_lookback_hours: int = 12
+
+    # Trial status changes and EMA opinions: slower, but the primary record.
+    clinical_enabled: bool = True
+    clinical_interval_minutes: int = 60
+    clinical_lookback_days: int = 3
+    clinical_batch_size: int = 100
+    # Home-regulator feeds (RNS, TDnet, HKEX) for non-US listings. Empty by
+    # default: no verified public endpoint, so an operator adds one only after
+    # confirming it returns what they expect.
+    exchange_filing_feeds: CsvList = Field(default_factory=list)
+
     # --- Yahoo prices --------------------------------------------------------
     # The only configured source that prices the European and Asia-Pacific
     # listings; one call returns the current price and the daily history. The
@@ -175,7 +218,7 @@ class Settings(BaseSettings):
     # the ingestion pipeline that triggered it.
     notification_timeout_seconds: float = 10.0
 
-    @field_validator("cors_origins", "email_to", mode="before")
+    @field_validator("cors_origins", "email_to", "exchange_filing_feeds", mode="before")
     @classmethod
     def _split_csv(cls, value: object) -> object:
         """Accept a comma-separated string so these work as plain env vars."""

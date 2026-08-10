@@ -17,7 +17,13 @@ from app.config import get_settings
 from app.database import get_session_factory
 from app.integrations.alpha_vantage import update_quotes
 from app.integrations.finnhub import ingest_finnhub_news, update_finnhub_quotes
+from app.integrations.clinical import ingest_clinical_and_regulatory
+from app.integrations.edgar_firehose import ingest_recent_filings
+from app.integrations.fda import ingest_fda
+from app.integrations.halts import ingest_halts
+from app.integrations.newswire import ingest_newswires
 from app.integrations.yahoo import update_yahoo_prices
+from app.integrations.yahoo_news import ingest_yahoo_news
 from app.integrations.finnhub_stream import finnhub_stream
 from app.integrations.sec import ingest_sec_filings
 from app.models import NewsArticle, Stock, StockPrice
@@ -35,6 +41,7 @@ _finnhub_cursor = 0
 _quote_cursor = 0
 _finnhub_quote_cursor = 0
 _yahoo_cursor = 0
+_yahoo_news_cursor = 0
 
 
 async def _active_tickers(db) -> list[str]:
@@ -172,6 +179,63 @@ async def yahoo_price_job() -> None:
             logger.info("Yahoo price job: %s", result)
 
 
+async def _run_and_log(name: str, coroutine_factory) -> None:
+    """Run one source and log its report.
+
+    Each source is wrapped so a failure in one cannot stop the others: these
+    are six independent third parties, and any of them can be down.
+    """
+    async with get_session_factory()() as db:
+        try:
+            report = await coroutine_factory(db)
+        except Exception:
+            logger.exception("%s ingest failed", name)
+            return
+    if report.added or report.merged_duplicate:
+        logger.info("%s: %s", name, report.as_dict())
+
+
+async def edgar_firehose_job() -> None:
+    """Catch new SEC filings within a minute or two of acceptance."""
+    await _run_and_log("EDGAR firehose", ingest_recent_filings)
+
+
+async def fda_job() -> None:
+    await _run_and_log("FDA", ingest_fda)
+
+
+async def newswire_job() -> None:
+    await _run_and_log("Newswires", ingest_newswires)
+
+
+async def halts_job() -> None:
+    await _run_and_log("Trading halts", ingest_halts)
+
+
+async def clinical_job() -> None:
+    await _run_and_log("Clinical/regulatory", ingest_clinical_and_regulatory)
+
+
+async def yahoo_news_job() -> None:
+    """Rotate through the universe pulling per-symbol headlines."""
+    global _yahoo_news_cursor
+    settings = get_settings()
+
+    async with get_session_factory()() as db:
+        tickers = await _active_tickers(db)
+        if not tickers:
+            return
+        size = max(1, settings.yahoo_news_batch_size)
+        batch, _yahoo_news_cursor = _next_batch(tickers, _yahoo_news_cursor, size)
+        try:
+            report = await ingest_yahoo_news(db, batch)
+        except Exception:
+            logger.exception("Yahoo news ingest failed")
+            return
+    if report.added or report.merged_duplicate:
+        logger.info("Yahoo news: %s", report.as_dict())
+
+
 async def price_push_job() -> None:
     """Push the latest stored close to every subscribed WebSocket client.
 
@@ -292,6 +356,55 @@ def start_scheduler() -> AsyncIOScheduler | None:
             IntervalTrigger(minutes=settings.yahoo_price_interval_minutes),
             id="yahoo_prices",
             name="Yahoo price and history load",
+            max_instances=1,
+            coalesce=True,
+        )
+
+    for enabled, job, interval, job_id, name in (
+        (
+            settings.edgar_firehose_enabled,
+            edgar_firehose_job,
+            settings.edgar_firehose_interval_minutes,
+            "edgar_firehose",
+            "SEC EDGAR current filings",
+        ),
+        (settings.fda_enabled, fda_job, settings.fda_interval_minutes, "fda", "FDA"),
+        (
+            settings.yahoo_news_enabled,
+            yahoo_news_job,
+            settings.yahoo_news_interval_minutes,
+            "yahoo_news",
+            "Yahoo headlines",
+        ),
+        (
+            settings.newswire_enabled,
+            newswire_job,
+            settings.newswire_interval_minutes,
+            "newswires",
+            "Newswire releases",
+        ),
+        (
+            settings.halts_enabled,
+            halts_job,
+            settings.halts_interval_minutes,
+            "halts",
+            "Trading halts",
+        ),
+        (
+            settings.clinical_enabled,
+            clinical_job,
+            settings.clinical_interval_minutes,
+            "clinical",
+            "Clinical and regulatory",
+        ),
+    ):
+        if not enabled:
+            continue
+        scheduler.add_job(
+            job,
+            IntervalTrigger(minutes=interval),
+            id=job_id,
+            name=name,
             max_instances=1,
             coalesce=True,
         )

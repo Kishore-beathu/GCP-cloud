@@ -14,7 +14,13 @@ from app.database import get_db, get_session_factory
 from app.integrations.alpha_vantage import backfill_daily, update_quotes
 from app.integrations.finnhub import ingest_finnhub_news, update_finnhub_quotes
 from app.integrations.finnhub_stream import finnhub_stream
+from app.integrations.clinical import ingest_clinical_and_regulatory
+from app.integrations.edgar_firehose import ingest_recent_filings
+from app.integrations.fda import ingest_fda
+from app.integrations.halts import ingest_halts
+from app.integrations.newswire import ingest_newswires
 from app.integrations.sec import ingest_sec_filings
+from app.integrations.yahoo_news import ingest_yahoo_news
 from app.integrations.yahoo import count_unpriced, update_yahoo_prices
 from app.schemas import HealthResponse
 from app.security import require_auth
@@ -237,6 +243,64 @@ async def trigger_yahoo_prices(
         "symbols_without_prices_before": remaining_before,
         "symbols_without_prices_after": await count_unpriced(db),
     }
+
+
+# One handler per source, so a caller can name exactly what to pull.
+_SOURCE_RUNNERS = {
+    "edgar": ingest_recent_filings,
+    "fda": ingest_fda,
+    "newswire": ingest_newswires,
+    "halts": ingest_halts,
+    "clinical": ingest_clinical_and_regulatory,
+}
+
+
+@router.post(
+    "/admin/ingest/source/{name}",
+    summary="Run one news source now and report what it stored",
+    dependencies=[Depends(require_auth)],
+)
+async def trigger_source(name: str, db: AsyncSession = Depends(get_db)) -> dict:
+    """Pull from a single source inline, so the counts come back to the caller.
+
+    Inline rather than backgrounded because the reason to call this by hand is
+    to find out whether a source works — and a 202 answers a different
+    question than the one being asked.
+    """
+    runner = _SOURCE_RUNNERS.get(name.strip().lower())
+    if runner is None:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Unknown source {name!r}. Available: {', '.join(sorted(_SOURCE_RUNNERS))}",
+        )
+    report = await runner(db)
+    return {"source": name, **report.as_dict()}
+
+
+@router.post(
+    "/admin/ingest/yahoo-news",
+    status_code=202,
+    summary="Pull per-symbol headlines from Yahoo",
+    dependencies=[Depends(require_auth)],
+)
+async def trigger_yahoo_news(
+    background: BackgroundTasks,
+    ticker: list[str] | None = Query(default=None, description="Limit to these symbols"),
+    group: str | None = Query(default=None, description="Industry group"),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """The one free news source covering non-US listings."""
+    targets = await _resolve_targets(db, ticker, group)
+    background.add_task(_run_yahoo_news, targets)
+    return {"status": "accepted", "symbols": len(targets) if targets else "all active"}
+
+
+async def _run_yahoo_news(tickers: list[str] | None) -> None:
+    async with get_session_factory()() as session:
+        try:
+            await ingest_yahoo_news(session, tickers)
+        except Exception:
+            logger.exception("Manual Yahoo news ingest failed")
 
 
 @router.get(

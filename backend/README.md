@@ -62,7 +62,7 @@ universe — no code change needed.
 | Method | Path | Purpose |
 |--------|------|---------|
 | GET | `/health` | Liveness + database probe |
-| GET | `/news` | Scored news feed; filter by `ticker`, `sentiment`, `event_type`, `source`, `min_score`, `since_days` |
+| GET | `/news` | Scored news feed; filter by `ticker`, `sentiment`, `event_type`, `source`, `min_score`, `since_days`, `include_duplicates` |
 | GET | `/stocks` | Search the universe: `q`, `sector`, `group`, `region`, `country`, `mic`, `currency` |
 | GET | `/stocks/sectors` | Industry groups, their sectors, and how many symbols each holds |
 | GET | `/stocks/markets` | Venues tracked, per-region counts, and which are open now |
@@ -80,6 +80,8 @@ universe — no code change needed.
 | POST | `/portfolios/{id}/simulate` | Replay the sentiment strategy over stored history |
 | GET | `/jobs/status` | Scheduler state and next run times |
 | POST | `/admin/seed` | Re-run universe seeding |
+| POST | `/admin/ingest/source/{name}` | Run one source inline and get its counts: `edgar`, `fda`, `newswire`, `halts`, `clinical` |
+| POST | `/admin/ingest/yahoo-news` | Per-symbol headlines — the only free news source covering non-US listings |
 | POST | `/admin/ingest/sec` | Trigger an SEC pull now (`?ticker=MRNA` or `?group=data_storage`) |
 | POST | `/admin/ingest/finnhub` | Trigger a Finnhub news pull now (`?group=ai` to target one industry) |
 | POST | `/admin/ingest/quotes` | Refresh prices from Finnhub — the practical price source for US symbols |
