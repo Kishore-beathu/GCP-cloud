@@ -89,3 +89,16 @@ def test_env_example_loads_as_written(tmp_path: Path) -> None:
 
     assert settings.cors_origins  # parsed, non-empty
     assert all(origin.startswith("http") for origin in settings.cors_origins)
+    # The example shipped a localhost PostgreSQL URL, so a fresh copy could not
+    # reach a database on a machine that had never installed one. It now
+    # defaults to a local file, which needs no server.
+    assert settings.database_url.startswith("sqlite+aiosqlite:")
+
+
+def test_env_example_uses_an_async_driver(tmp_path: Path) -> None:
+    """A sync driver URL fails at connect time, long after the copy."""
+    env = write_env(tmp_path, ENV_EXAMPLE.read_text(encoding="utf-8"))
+
+    scheme = Settings(_env_file=env).database_url.split("://", 1)[0]
+
+    assert scheme in {"sqlite+aiosqlite", "postgresql+asyncpg"}

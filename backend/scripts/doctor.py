@@ -97,7 +97,37 @@ def load_settings():
     return None
 
 
-def check_driver(settings) -> None:
+def check_env_file() -> set[str]:
+    """Report which settings the .env actually sets. Names only, never values.
+
+    A .env copied from the example loads perfectly while leaving every real
+    value at its placeholder, so "config loaded" is not the same as "config
+    filled in". Listing the keys makes the gap obvious.
+    """
+    from pathlib import Path
+
+    path = Path(".env")
+    if not path.is_file():
+        report(WARN, ".env", "not found - every setting is using its default")
+        return set()
+
+    keys = set()
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        stripped = line.strip()
+        if stripped and not stripped.startswith("#") and "=" in stripped:
+            keys.add(stripped.split("=", 1)[0].strip().upper())
+    report(WARN if not keys else OK, ".env", f"{len(keys)} setting(s): {_summary(keys)}")
+    return keys
+
+
+def _summary(keys: set[str]) -> str:
+    shown = sorted(keys)
+    if len(shown) > 8:
+        return ", ".join(shown[:8]) + f", +{len(shown) - 8} more"
+    return ", ".join(shown)
+
+
+def check_driver(settings, env_keys: set[str]) -> None:
     """The most common .env mistake: a sync driver URL in an async app."""
     url = settings.database_url
     scheme = url.split("://", 1)[0]
@@ -114,11 +144,17 @@ def check_driver(settings) -> None:
             "'sqlite://' is the synchronous driver",
             "Use sqlite+aiosqlite:/// instead.",
         )
+    elif "DATABASE_URL" not in env_keys:
+        report(
+            WARN,
+            "database url",
+            f"not set in .env, using the built-in default {redact_database_url(url)}",
+        )
     else:
         report(OK, "database url", redact_database_url(url))
 
 
-async def check_connection(settings) -> None:
+async def check_connection(settings, env_keys: set[str]) -> None:
     from sqlalchemy import text
 
     from app.database import dispose_engine, get_engine
@@ -129,14 +165,36 @@ async def check_connection(settings) -> None:
             await connection.execute(text("SELECT 1"))
         report(OK, "database", "connected, SELECT 1 succeeded")
     except Exception as exc:
-        fail("database", f"{type(exc).__name__}: {exc}", _database_fix(exc, settings))
+        fail(
+            "database",
+            f"{type(exc).__name__}: {exc}",
+            _database_fix(exc, settings, env_keys),
+        )
     finally:
         await dispose_engine()
 
 
-def _database_fix(exc: Exception, settings) -> str:
+def _database_fix(exc: Exception, settings, env_keys: set[str]) -> str:
     """Map the common connection failures onto their actual cause."""
     text = f"{type(exc).__name__}: {exc}".lower()
+    host = urlsplit(settings.database_url).hostname
+
+    # Check this before the generic network advice: a refused connection to
+    # localhost is not a firewall, it is nothing listening on that port.
+    if "refused" in text and host in {"localhost", "127.0.0.1", "::1"}:
+        unset = "DATABASE_URL" not in env_keys
+        return (
+            (
+                "DATABASE_URL is not set in backend/.env, so the app fell back to "
+                "a local PostgreSQL that is not running.\n   "
+                if unset
+                else "Nothing is listening on that port - no local PostgreSQL "
+                "server is running.\n   "
+            )
+            + "Set DATABASE_URL in backend/.env to one of:\n"
+            "     sqlite+aiosqlite:///./dev.db      (a local file, no server needed)\n"
+            "     postgresql+asyncpg://...pooler.supabase.com:5432/postgres"
+        )
     if "asyncpg" in text and "no module" in text:
         return "asyncpg is not installed: python -m pip install -r requirements.txt"
     if "password authentication failed" in text:
@@ -215,11 +273,12 @@ async def main() -> int:
         _summarise()
         return 1
     report(OK, "config", f"loaded, environment={settings.environment}")
+    env_keys = check_env_file()
     report(OK, "cors origins", f"{len(settings.cors_origins)} allowed")
 
-    check_driver(settings)
+    check_driver(settings, env_keys)
     if not _failed:
-        await check_connection(settings)
+        await check_connection(settings, env_keys)
     check_secrets(settings)
 
     _summarise()
