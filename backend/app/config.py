@@ -2,10 +2,39 @@
 
 from __future__ import annotations
 
+import json
 from functools import lru_cache
+from typing import Annotated
 
 from pydantic import Field, field_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
+
+
+def _split_list(value: object) -> object:
+    """Turn a plain env-var string into a list.
+
+    Accepts the comma-separated form people actually write in a `.env`
+    (`CORS_ORIGINS=http://a,http://b`) and still accepts a JSON array, which is
+    what pydantic-settings expects by default. Anything else is passed through
+    untouched for pydantic to validate.
+    """
+    if not isinstance(value, str):
+        return value
+    text = value.strip()
+    if text.startswith("["):
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            # Fall through to comma-splitting so the error pydantic raises
+            # names the offending value rather than the JSON parser.
+            pass
+    return [item.strip() for item in text.split(",") if item.strip()]
+
+
+# `NoDecode` stops pydantic-settings from JSON-decoding these fields before
+# validation. Without it a comma-separated .env value raises SettingsError
+# inside the settings source and the validators below never run at all.
+CsvList = Annotated[list[str], NoDecode]
 
 
 class Settings(BaseSettings):
@@ -52,7 +81,7 @@ class Settings(BaseSettings):
     # Vite dev server (3000/5173), vite preview (4173), and a spare (3001) —
     # in both localhost and 127.0.0.1 spellings, which browsers treat as
     # different origins. Production origins come from the CORS_ORIGINS env var.
-    cors_origins: list[str] = Field(
+    cors_origins: CsvList = Field(
         default_factory=lambda: [
             f"http://{host}:{port}"
             for host in ("localhost", "127.0.0.1")
@@ -120,27 +149,17 @@ class Settings(BaseSettings):
     smtp_use_tls: bool = True
     email_from: str | None = None
     # Default recipients when an alert's condition carries no "email_to".
-    email_to: list[str] = Field(default_factory=list)
+    email_to: CsvList = Field(default_factory=list)
 
     # Timeout for outbound notification calls; a slow webhook must never stall
     # the ingestion pipeline that triggered it.
     notification_timeout_seconds: float = 10.0
 
-    @field_validator("email_to", mode="before")
+    @field_validator("cors_origins", "email_to", mode="before")
     @classmethod
-    def _split_recipients(cls, value: object) -> object:
-        """Accept a comma-separated string so EMAIL_TO works as a plain env var."""
-        if isinstance(value, str):
-            return [address.strip() for address in value.split(",") if address.strip()]
-        return value
-
-    @field_validator("cors_origins", mode="before")
-    @classmethod
-    def _split_origins(cls, value: object) -> object:
-        """Accept a comma-separated string so CORS_ORIGINS works as a plain env var."""
-        if isinstance(value, str):
-            return [origin.strip() for origin in value.split(",") if origin.strip()]
-        return value
+    def _split_csv(cls, value: object) -> object:
+        """Accept a comma-separated string so these work as plain env vars."""
+        return _split_list(value)
 
     @property
     def is_sqlite(self) -> bool:
