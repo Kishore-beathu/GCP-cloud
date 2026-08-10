@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import dataclass
 from datetime import datetime, timezone
 
 import httpx
@@ -28,6 +27,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.models import Stock, StockPrice
+from app.services.prices import Quote, upsert_quotes as _upsert_quotes
 from app.services.redaction import redact, secrets_from
 
 logger = logging.getLogger(__name__)
@@ -35,19 +35,6 @@ logger = logging.getLogger(__name__)
 BASE_URL = "https://www.alphavantage.co/query"
 SOURCE = "alpha_vantage"
 REQUEST_DELAY_SECONDS = 12.5  # ~4.8 calls/min, inside the free tier's 5
-
-
-@dataclass(frozen=True)
-class Quote:
-    """One day's OHLCV for one symbol."""
-
-    symbol: str
-    open: float | None
-    high: float | None
-    low: float | None
-    close: float
-    volume: int | None
-    trading_day: datetime
 
 
 class AlphaVantageThrottled(Exception):
@@ -201,51 +188,8 @@ async def fetch_daily_series(
 
 
 async def upsert_quotes(db: AsyncSession, stock: Stock, quotes: list[Quote]) -> dict[str, int]:
-    """Insert new (ticker, day) rows, update rows the ingest has seen before.
-
-    A plain SELECT-then-write is deliberate: batch sizes here are tiny and it
-    stays portable across PostgreSQL and the SQLite test database, where
-    ON CONFLICT syntax differs.
-    """
-    if not quotes:
-        return {"inserted": 0, "updated": 0}
-
-    days = [quote.trading_day for quote in quotes]
-    existing = {
-        price.price_date.replace(tzinfo=timezone.utc): price
-        for price in (
-            await db.execute(
-                select(StockPrice).where(
-                    StockPrice.ticker_id == stock.id, StockPrice.price_date.in_(days)
-                )
-            )
-        ).scalars()
-    }
-
-    inserted = updated = 0
-    for quote in quotes:
-        row = existing.get(quote.trading_day)
-        if row is None:
-            db.add(
-                StockPrice(
-                    ticker_id=stock.id,
-                    open=quote.open,
-                    high=quote.high,
-                    low=quote.low,
-                    close=quote.close,
-                    volume=quote.volume,
-                    price_date=quote.trading_day,
-                    source=SOURCE,
-                )
-            )
-            inserted += 1
-        else:
-            row.open, row.high, row.low = quote.open, quote.high, quote.low
-            row.close, row.volume, row.source = quote.close, quote.volume, SOURCE
-            updated += 1
-
-    await db.commit()
-    return {"inserted": inserted, "updated": updated}
+    """Store quotes attributed to Alpha Vantage."""
+    return await _upsert_quotes(db, stock, quotes, source=SOURCE)
 
 
 async def _load_stocks(db: AsyncSession, tickers: list[str] | None) -> list[Stock]:

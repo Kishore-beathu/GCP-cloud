@@ -21,6 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import get_settings
 from app.models import Stock
 from app.services.ingest import IngestReport, RawArticle, store_articles
+from app.services.prices import Quote, upsert_quotes
 
 logger = logging.getLogger(__name__)
 
@@ -162,3 +163,114 @@ async def ingest_finnhub_news(
                 await asyncio.sleep(REQUEST_DELAY_SECONDS)
 
     return await store_articles(db, collected)
+
+
+# --- Quotes ------------------------------------------------------------------
+# Finnhub's /quote is the practical price source for this platform. Alpha
+# Vantage's free tier allows ~25 calls a day, which cannot populate an
+# 87-symbol watchlist even once; Finnhub's allows ~60 a minute, which covers
+# the whole universe in under two minutes and can be repeated all day.
+
+
+def parse_quote(ticker: str, payload: dict) -> Quote | None:
+    """Convert a /quote response into a Quote, or None if the symbol is uncovered.
+
+    Finnhub answers HTTP 200 for a symbol it does not carry, with every field
+    zeroed and ``t`` (the quote timestamp) set to 0. Treating that as a real
+    price would write a 0.00 close over the whole non-US half of the universe.
+    """
+    close = payload.get("c")
+    timestamp = payload.get("t")
+    if not close or not timestamp:
+        return None
+
+    try:
+        trading_day = datetime.fromtimestamp(int(timestamp), tz=timezone.utc).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
+    except (ValueError, OSError, OverflowError):
+        logger.debug("Finnhub quote for %s has invalid timestamp %r", ticker, timestamp)
+        return None
+
+    def number(key: str) -> float | None:
+        value = payload.get(key)
+        return float(value) if isinstance(value, (int, float)) and value else None
+
+    return Quote(
+        symbol=ticker,
+        open=number("o"),
+        high=number("h"),
+        low=number("l"),
+        close=float(close),
+        volume=None,  # /quote carries no volume; the daily backfill does.
+        trading_day=trading_day,
+    )
+
+
+async def fetch_quote(
+    client: httpx.AsyncClient, ticker: str, api_key: str
+) -> Quote | None:
+    """Fetch one symbol's latest quote. Raises on rate limiting or rejection."""
+    try:
+        response = await client.get(
+            f"{BASE_URL}/quote",
+            params={"symbol": ticker, "token": api_key},
+            timeout=30.0,
+        )
+        if response.status_code == 429:
+            raise FinnhubRateLimited(ticker)
+        if response.status_code in (401, 403):
+            raise FinnhubRejected(
+                f"HTTP {response.status_code} for {ticker}: {response.text[:200]}"
+            )
+        response.raise_for_status()
+        payload = response.json()
+    except (FinnhubRateLimited, FinnhubRejected):
+        raise
+    except (httpx.HTTPError, ValueError) as exc:
+        logger.warning("Finnhub quote failed for %s: %s", ticker, exc)
+        return None
+
+    if not isinstance(payload, dict):
+        return None
+    return parse_quote(ticker, payload)
+
+
+async def update_finnhub_quotes(
+    db: AsyncSession, tickers: list[str] | None = None
+) -> dict[str, int]:
+    """Refresh the latest price for the given tickers (default: all active)."""
+    settings = get_settings()
+    totals = {"inserted": 0, "updated": 0, "uncovered": 0}
+    if not settings.finnhub_api_key:
+        logger.info("Finnhub quote refresh skipped: FINNHUB_API_KEY is not set")
+        return totals
+
+    query = select(Stock).where(Stock.is_active.is_(True)).order_by(Stock.ticker)
+    if tickers:
+        query = query.where(Stock.ticker.in_([t.upper() for t in tickers]))
+    stocks = list((await db.execute(query)).scalars())
+
+    async with httpx.AsyncClient() as client:
+        for index, stock in enumerate(stocks):
+            try:
+                quote = await fetch_quote(client, stock.ticker, settings.finnhub_api_key)
+            except FinnhubRateLimited:
+                logger.warning("Finnhub rate limit hit at %s; keeping what we have", stock.ticker)
+                break
+            except FinnhubRejected as exc:
+                logger.error("Finnhub rejected the quote request, stopping: %s", exc)
+                break
+
+            if quote is None:
+                totals["uncovered"] += 1
+            else:
+                result = await upsert_quotes(db, stock, [quote], source=SOURCE)
+                totals["inserted"] += result["inserted"]
+                totals["updated"] += result["updated"]
+
+            if index < len(stocks) - 1:
+                await asyncio.sleep(REQUEST_DELAY_SECONDS)
+
+    logger.info("Finnhub quote refresh complete: %s", totals)
+    return totals

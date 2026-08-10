@@ -123,6 +123,16 @@ class Settings(BaseSettings):
     alpha_vantage_interval_seconds: int = 60
     alpha_vantage_batch_size: int = 5
 
+    # --- Finnhub quotes ------------------------------------------------------
+    # The primary price source. Finnhub's free tier allows ~60 calls/min, so a
+    # batch of 50 every 60 seconds covers an 87-symbol universe in under two
+    # minutes and can repeat all day. Alpha Vantage's free tier allows ~25
+    # calls per *day*, which cannot fill the watchlist even once — keep it for
+    # deliberate history backfills instead.
+    finnhub_quote_enabled: bool = True
+    finnhub_quote_interval_seconds: int = 60
+    finnhub_quote_batch_size: int = 50
+
     # --- Finnhub live trade stream ------------------------------------------
     # The one true real-time source: a WebSocket carrying trade ticks. Only
     # runs when FINNHUB_API_KEY is set.

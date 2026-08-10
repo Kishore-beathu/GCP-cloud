@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import get_settings
 from app.database import get_db, get_session_factory
 from app.integrations.alpha_vantage import backfill_daily, update_quotes
-from app.integrations.finnhub import ingest_finnhub_news
+from app.integrations.finnhub import ingest_finnhub_news, update_finnhub_quotes
 from app.integrations.finnhub_stream import finnhub_stream
 from app.integrations.sec import ingest_sec_filings
 from app.schemas import HealthResponse
@@ -137,6 +137,33 @@ async def trigger_price_backfill(
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return {"ticker": ticker.upper(), **result}
+
+
+async def _run_finnhub_quotes(tickers: list[str] | None) -> None:
+    async with get_session_factory()() as session:
+        try:
+            await update_finnhub_quotes(session, tickers)
+        except Exception:
+            logger.exception("Manual Finnhub quote refresh failed")
+
+
+@router.post(
+    "/admin/ingest/quotes",
+    status_code=202,
+    summary="Refresh prices from Finnhub for the whole universe",
+    dependencies=[Depends(require_auth)],
+)
+async def trigger_finnhub_quotes(
+    background: BackgroundTasks,
+    ticker: list[str] | None = Query(default=None, description="Limit to these symbols"),
+) -> dict:
+    """Populate the watchlist with prices using the Finnhub key.
+
+    Separate from `/admin/ingest/prices`, which uses Alpha Vantage and is
+    limited to roughly 25 calls a day on a free plan.
+    """
+    background.add_task(_run_finnhub_quotes, ticker)
+    return {"status": "accepted", "tickers": ticker or "all active"}
 
 
 @router.get(

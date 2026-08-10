@@ -16,7 +16,7 @@ from sqlalchemy import delete, select
 from app.config import get_settings
 from app.database import get_session_factory
 from app.integrations.alpha_vantage import update_quotes
-from app.integrations.finnhub import ingest_finnhub_news
+from app.integrations.finnhub import ingest_finnhub_news, update_finnhub_quotes
 from app.integrations.finnhub_stream import finnhub_stream
 from app.integrations.sec import ingest_sec_filings
 from app.models import NewsArticle, Stock, StockPrice
@@ -32,6 +32,7 @@ _scheduler: AsyncIOScheduler | None = None
 _sec_cursor = 0
 _finnhub_cursor = 0
 _quote_cursor = 0
+_finnhub_quote_cursor = 0
 
 
 async def _active_tickers(db) -> list[str]:
@@ -115,6 +116,36 @@ async def quote_refresh_job() -> None:
         result = await update_quotes(db, batch)
         if result["inserted"] or result["updated"] or result["failed"]:
             logger.info("Quote job (%s): %s", ",".join(batch), result)
+
+
+async def finnhub_quote_job() -> None:
+    """Refresh prices from Finnhub for the next batch of tickers.
+
+    This is the primary price source: ~60 calls/min covers the whole universe
+    in a couple of minutes, where Alpha Vantage's free tier allows ~25 calls a
+    *day* and cannot populate the watchlist even once.
+    """
+    global _finnhub_quote_cursor
+    settings = get_settings()
+
+    async with get_session_factory()() as db:
+        tickers = await _active_tickers(db)
+        if not tickers:
+            return
+
+        size = max(1, settings.finnhub_quote_batch_size)
+        # Symbols someone is watching go first; the rest rotate.
+        watched = sorted(ticker_hub.subscribed_tickers() & set(tickers))[:size]
+        batch = list(watched)
+        if len(batch) < size:
+            rotation, _finnhub_quote_cursor = _next_batch(
+                tickers, _finnhub_quote_cursor, size - len(batch)
+            )
+            batch += [t for t in rotation if t not in batch]
+
+        result = await update_finnhub_quotes(db, batch)
+        if result["inserted"] or result["updated"]:
+            logger.info("Finnhub quote job: %s", result)
 
 
 async def price_push_job() -> None:
@@ -221,6 +252,16 @@ def start_scheduler() -> AsyncIOScheduler | None:
             max_instances=1,
             coalesce=True,
         )
+    if settings.finnhub_api_key and settings.finnhub_quote_enabled:
+        scheduler.add_job(
+            finnhub_quote_job,
+            IntervalTrigger(seconds=settings.finnhub_quote_interval_seconds),
+            id="finnhub_quotes",
+            name="Finnhub quote refresh",
+            max_instances=1,
+            coalesce=True,
+        )
+
     scheduler.add_job(
         price_push_job,
         IntervalTrigger(seconds=settings.ticker_push_interval_seconds),
