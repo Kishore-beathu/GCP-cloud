@@ -83,6 +83,11 @@ class NewsArticleOut(ORMModel):
     url: str
     published_at: datetime
     sentiment: SentimentOut | None = None
+    # How many other sources carried the same story. Several wires running one
+    # release within minutes is corroboration, so it is shown rather than
+    # silently discarded.
+    corroborations: int = 0
+    other_sources: list[str] = Field(default_factory=list)
 
 
 class StockDetail(StockOut):

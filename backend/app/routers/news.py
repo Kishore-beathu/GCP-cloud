@@ -36,11 +36,20 @@ async def list_news(
     source: str | None = Query(default=None),
     min_score: float | None = Query(default=None, ge=-1.0, le=1.0),
     since_days: int | None = Query(default=None, ge=1, le=3650),
+    include_duplicates: bool = Query(
+        default=False,
+        description="Include other wires' copies of a story as separate rows",
+    ),
     limit: int = Query(default=50, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
     db: AsyncSession = Depends(get_db),
 ) -> list[NewsArticleOut]:
-    """Return scored articles, newest first, with optional filters."""
+    """Return scored articles, newest first, with optional filters.
+
+    Syndicated copies are folded into the story they retell and reported as a
+    corroboration count. Without that, a single press release carried by four
+    wires fills the first screen of the feed with one event.
+    """
     query = (
         select(NewsArticle, Stock.ticker, SentimentScore)
         .join(Stock, Stock.id == NewsArticle.ticker_id)
@@ -58,6 +67,8 @@ async def list_news(
         query = query.where(SentimentScore.event_type == event_type.value)
     if source:
         query = query.where(NewsArticle.source == source)
+    if not include_duplicates:
+        query = query.where(NewsArticle.duplicate_of_id.is_(None))
     if min_score is not None:
         query = query.where(SentimentScore.score >= min_score)
     if since_days is not None:
@@ -65,4 +76,27 @@ async def list_news(
         query = query.where(NewsArticle.published_at >= cutoff)
 
     rows = (await db.execute(query)).all()
-    return [to_news_out(article, symbol, score) for article, symbol, score in rows]
+    out = [to_news_out(article, symbol, score) for article, symbol, score in rows]
+
+    if include_duplicates or not out:
+        return out
+
+    # One extra query for the whole page rather than one per article.
+    primary_ids = [item.id for item in out]
+    copies = (
+        await db.execute(
+            select(NewsArticle.duplicate_of_id, NewsArticle.source).where(
+                NewsArticle.duplicate_of_id.in_(primary_ids)
+            )
+        )
+    ).all()
+
+    by_primary: dict[int, list[str]] = {}
+    for primary_id, copy_source in copies:
+        by_primary.setdefault(primary_id, []).append(copy_source)
+
+    for item in out:
+        also = sorted(set(by_primary.get(item.id, [])))
+        item.corroborations = len(by_primary.get(item.id, []))
+        item.other_sources = also
+    return out

@@ -51,12 +51,66 @@ async def test_duplicates_within_one_batch_are_collapsed(db, seeded_stocks):
     assert report.skipped_duplicate == 1
 
 
-async def test_same_url_from_different_source_is_kept(db, seeded_stocks):
+async def test_second_wire_carrying_the_same_story_is_merged(db, seeded_stocks):
+    """Two wires, one release. Previously two rows; now one story with a copy.
+
+    The copy is kept rather than dropped — that several sources carried it is
+    corroboration — but it does not stand alone in the feed, is not scored, and
+    is not counted twice by the backtester.
+    """
     await store_articles(db, [_article(source="feed_a")])
     report = await store_articles(db, [_article(source="feed_b")])
 
+    assert report.added == 0
+    assert report.merged_duplicate == 1
+
+    rows = (await db.execute(select(NewsArticle).order_by(NewsArticle.id))).scalars().all()
+    assert len(rows) == 2
+    assert rows[0].duplicate_of_id is None
+    assert rows[1].duplicate_of_id == rows[0].id
+
+    # Only the primary carries a score, so sentiment is counted once.
+    assert (await db.execute(select(func.count(SentimentScore.id)))).scalar_one() == 1
+
+
+async def test_a_different_story_for_the_same_ticker_is_not_merged(db, seeded_stocks):
+    """The dangerous failure is a wrong merge, which hides a real event."""
+    await store_articles(db, [_article(source="feed_a")])
+    report = await store_articles(
+        db,
+        [
+            _article(
+                source="feed_b",
+                url="https://example.com/a2",
+                headline="Moderna prices $1 billion convertible note offering",
+            )
+        ],
+    )
+
     assert report.added == 1
-    assert (await db.execute(select(func.count(NewsArticle.id)))).scalar_one() == 2
+    assert report.merged_duplicate == 0
+
+
+async def test_the_same_story_outside_the_window_is_not_merged(db, seeded_stocks):
+    """A re-run of the same news a week later is a new event, not a copy."""
+    old = datetime.now(timezone.utc) - timedelta(days=7)
+    await store_articles(db, [_article(source="feed_a", published_at=old)])
+    report = await store_articles(db, [_article(source="feed_b", url="https://example.com/a2")])
+
+    assert report.added == 1
+    assert report.merged_duplicate == 0
+
+
+async def test_merged_copies_are_hidden_from_the_feed_but_counted(client, db, seeded_stocks):
+    await store_articles(db, [_article(source="feed_a")])
+    await store_articles(db, [_article(source="feed_b", url="https://example.com/a2")])
+
+    rows = (await client.get("/news")).json()
+    assert len(rows) == 1
+    assert rows[0]["corroborations"] == 1
+    assert rows[0]["other_sources"] == ["feed_b"]
+
+    assert len((await client.get("/news?include_duplicates=true")).json()) == 2
 
 
 async def test_untracked_ticker_is_skipped(db, seeded_stocks):
@@ -73,6 +127,7 @@ async def test_empty_batch_is_a_noop(db, seeded_stocks):
         "skipped_duplicate": 0,
         "skipped_unknown_ticker": 0,
         "alerts_triggered": 0,
+        "merged_duplicate": 0,
     }
 
 

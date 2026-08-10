@@ -125,6 +125,14 @@ class NewsArticle(Base):
     ingested_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
+    # Set when this row is another wire's copy of a story already stored. The
+    # earliest copy is the primary and keeps duplicate_of_id NULL. Duplicates
+    # are kept rather than dropped: that four wires carried the same release
+    # within a minute is itself signal, and the feed can show it as
+    # corroboration instead of as four identical rows.
+    duplicate_of_id: Mapped[int | None] = mapped_column(
+        ForeignKey("news_articles.id", ondelete="SET NULL"), nullable=True, index=True
+    )
 
     stock: Mapped[Stock] = relationship(back_populates="articles")
     sentiment: Mapped["SentimentScore | None"] = relationship(
