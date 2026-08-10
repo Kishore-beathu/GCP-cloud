@@ -247,3 +247,127 @@ async def probe_sources(settings: Settings) -> dict:
         "failing": [probe.source for probe in probes if not probe.ok],
         "sources": [probe.as_dict() for probe in probes],
     }
+
+
+# --- Feed sources ------------------------------------------------------------
+# "No news from the new sources" has three very different causes, and the
+# counts below separate them: the feed returned nothing (URL wrong, or host
+# blocking us), it returned items but none named a tracked company (matching or
+# universe problem), or it worked and everything was already stored.
+
+
+@dataclass
+class FeedProbe:
+    """The result of reading one feed without storing anything."""
+
+    source: str
+    url: str
+    ok: bool
+    entries: int
+    matched: int
+    detail: str
+    latency_ms: int | None = None
+
+    def as_dict(self) -> dict:
+        return asdict(self)
+
+
+async def probe_feed(
+    client: httpx.AsyncClient,
+    source: str,
+    url: str,
+    index,
+    *,
+    user_agent: str | None = None,
+    params: dict | None = None,
+) -> FeedProbe:
+    """Fetch one feed and report entries seen and entries naming a tracked name."""
+    from app.services.feeds import DEFAULT_USER_AGENT, parse_feed
+    from app.services.matching import match_tickers
+
+    started = time.perf_counter()
+    try:
+        response = await client.get(
+            url,
+            params=params,
+            headers={"User-Agent": user_agent or DEFAULT_USER_AGENT},
+            timeout=20.0,
+        )
+    except httpx.HTTPError as exc:
+        return FeedProbe(source, url, False, 0, 0, f"Network error: {exc}")
+
+    elapsed = int((time.perf_counter() - started) * 1000)
+
+    if response.status_code != 200:
+        return FeedProbe(
+            source,
+            url,
+            False,
+            0,
+            0,
+            f"HTTP {response.status_code}. {response.text[:160]}",
+            elapsed,
+        )
+
+    entries = parse_feed(response.text)
+    if not entries:
+        return FeedProbe(
+            source,
+            url,
+            False,
+            0,
+            0,
+            "Reachable, but no entries parsed — the feed shape may have changed.",
+            elapsed,
+        )
+
+    matched = sum(1 for entry in entries if match_tickers(entry.title, index, limit=1))
+    detail = f"{len(entries)} entries, {matched} naming a tracked company."
+    if matched == 0:
+        detail += (
+            " The feed works; nothing in this window is about your universe, which"
+            " is normal for a narrow watchlist over a short window."
+        )
+    return FeedProbe(source, url, True, len(entries), matched, detail, elapsed)
+
+
+async def probe_news_sources(settings: Settings, db) -> dict:
+    """Read every feed-based source once and report what came back."""
+    from app.integrations import clinical, fda, halts, newswire
+    from app.integrations.edgar_firehose import FEED_URL as EDGAR_URL
+    from app.services.matching import build_index
+
+    index = await build_index(db)
+    probes: list[FeedProbe] = []
+
+    async with httpx.AsyncClient() as client:
+        probes.append(
+            await probe_feed(
+                client,
+                "sec_edgar_firehose",
+                EDGAR_URL,
+                index,
+                user_agent=settings.sec_user_agent,
+                params={
+                    "action": "getcurrent",
+                    "type": "8-K",
+                    "company": "",
+                    "dateb": "",
+                    "owner": "include",
+                    "count": "100",
+                    "output": "atom",
+                },
+            )
+        )
+        probes.append(await probe_feed(client, "fda_press", fda.PRESS_FEED, index))
+        probes.append(await probe_feed(client, "halts", halts.FEED_URL, index))
+        probes.append(await probe_feed(client, "ema", clinical.EMA_FEED, index))
+        for wire in newswire.WIRES:
+            probes.append(await probe_feed(client, f"newswire:{wire.key}", wire.url, index))
+
+    return {
+        "tracked_companies": len(index.names),
+        "reachable": [p.source for p in probes if p.ok],
+        "unreachable": [p.source for p in probes if not p.ok],
+        "feeds": [p.as_dict() for p in probes],
+    }

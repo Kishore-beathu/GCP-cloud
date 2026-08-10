@@ -320,6 +320,23 @@ async def diagnose_sources() -> dict:
 
 
 @router.get(
+    "/admin/diagnose/news",
+    summary="Read every feed source once and report entries seen and matched",
+    dependencies=[Depends(require_auth)],
+)
+async def diagnose_news(db: AsyncSession = Depends(get_db)) -> dict:
+    """Separate the three reasons a feed source produces nothing.
+
+    Zero entries means the URL is wrong or the host is refusing us. Entries but
+    zero matched means the feed works and nothing in it is about this universe.
+    Both look identical from an empty dashboard.
+    """
+    from app.services.diagnostics import probe_news_sources
+
+    return await probe_news_sources(get_settings(), db)
+
+
+@router.get(
     "/admin/sentiment/status",
     summary="How many stored scores are stale",
     dependencies=[Depends(require_auth)],

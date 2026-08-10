@@ -247,3 +247,68 @@ async def test_redaction_covers_every_configured_credential(monkeypatch):
     report = await probe_sources(settings(finnhub_api_key=finnhub_key))
 
     assert finnhub_key not in str(report)
+
+
+# --- Feed diagnostics -------------------------------------------------------
+# "No news from the new sources" has three causes that look identical from an
+# empty dashboard. These separate them.
+
+
+@pytest.mark.asyncio
+async def test_feed_probe_reports_entries_and_matches():
+    from app.services.diagnostics import probe_feed
+    from app.services.matching import CompanyIndex
+
+    rss = """<rss version="2.0"><channel>
+      <item><title>Pfizer wins approval</title><link>https://e.com/1</link>
+        <pubDate>Mon, 10 Aug 2026 09:00:00 GMT</pubDate></item>
+      <item><title>An unrelated company raises money</title><link>https://e.com/2</link>
+        <pubDate>Mon, 10 Aug 2026 09:00:00 GMT</pubDate></item>
+    </channel></rss>"""
+    index = CompanyIndex(names={"pfizer": ("PFE",)}, tickers=frozenset({"PFE"}))
+
+    async with client_returning(httpx.Response(200, text=rss)) as client:
+        probe = await probe_feed(client, "wire", "https://e.com/rss", index)
+
+    assert probe.ok
+    assert probe.entries == 2
+    assert probe.matched == 1
+
+
+@pytest.mark.asyncio
+async def test_feed_probe_separates_unreachable_from_unmatched():
+    """A 404 and a working feed about other companies are different problems."""
+    from app.services.diagnostics import probe_feed
+    from app.services.matching import CompanyIndex
+
+    index = CompanyIndex(names={"pfizer": ("PFE",)}, tickers=frozenset({"PFE"}))
+
+    async with client_returning(httpx.Response(404, text="Not found")) as client:
+        unreachable = await probe_feed(client, "wire", "https://e.com/rss", index)
+
+    rss = """<rss version="2.0"><channel>
+      <item><title>Some other company did something</title><link>https://e.com/3</link>
+        <pubDate>Mon, 10 Aug 2026 09:00:00 GMT</pubDate></item>
+    </channel></rss>"""
+    async with client_returning(httpx.Response(200, text=rss)) as client:
+        unmatched = await probe_feed(client, "wire", "https://e.com/rss", index)
+
+    assert not unreachable.ok and unreachable.entries == 0
+    assert "404" in unreachable.detail
+
+    assert unmatched.ok and unmatched.entries == 1 and unmatched.matched == 0
+    assert "nothing in this window is about your universe" in unmatched.detail
+
+
+@pytest.mark.asyncio
+async def test_feed_probe_flags_a_changed_feed_shape():
+    """Reachable but unparseable is a third distinct failure."""
+    from app.services.diagnostics import probe_feed
+    from app.services.matching import CompanyIndex
+
+    index = CompanyIndex(names={}, tickers=frozenset())
+    async with client_returning(httpx.Response(200, text="<html>not a feed</html>")) as client:
+        probe = await probe_feed(client, "wire", "https://e.com/rss", index)
+
+    assert not probe.ok
+    assert "shape may have changed" in probe.detail

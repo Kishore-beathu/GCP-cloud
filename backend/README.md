@@ -88,7 +88,8 @@ universe — no code change needed.
 | POST | `/admin/ingest/yahoo` | Load price + history for symbols no keyed vendor covers (`?range=1y&only_missing=true`) |
 | POST | `/admin/ingest/prices` | Trigger an Alpha Vantage quote refresh now (~25 calls/day on a free plan) |
 | POST | `/admin/backfill/prices` | Load daily price history for one ticker (`?ticker=MRNA&outputsize=full`) |
-| GET | `/admin/diagnose/sources` | Probe every vendor and report what it said — run this first when the dashboard is empty |
+| GET | `/admin/diagnose/sources` | Probe every keyed vendor and report what it said — run this first when the dashboard is empty |
+| GET | `/admin/diagnose/news` | Read every feed source once: entries seen vs entries naming a tracked company |
 | GET | `/admin/sentiment/status` | How many stored scores came from an older model version |
 | POST | `/admin/sentiment/rescore` | Re-score stored news with the current lexicon |
 | WS | `/ws/tickers/{ticker}` | Real-time snapshot, price pushes, and alert pushes |
