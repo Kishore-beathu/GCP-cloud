@@ -140,6 +140,22 @@ async def trigger_price_backfill(
 
 
 @router.get(
+    "/admin/diagnose/sources",
+    summary="Probe every upstream data source and report what it said",
+    dependencies=[Depends(require_auth)],
+)
+async def diagnose_sources() -> dict:
+    """Make one live call per vendor so an empty dashboard has an explanation.
+
+    Ingestion degrades quietly by design, which hides *which* source failed.
+    This reports each vendor's own wording. No key is echoed back.
+    """
+    from app.services.diagnostics import probe_sources
+
+    return await probe_sources(get_settings())
+
+
+@router.get(
     "/admin/sentiment/status",
     summary="How many stored scores are stale",
     dependencies=[Depends(require_auth)],

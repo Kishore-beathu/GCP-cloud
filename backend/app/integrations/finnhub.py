@@ -33,6 +33,15 @@ class FinnhubRateLimited(Exception):
     """Raised when Finnhub answers 429; the current batch should stop."""
 
 
+class FinnhubRejected(Exception):
+    """Raised on 401/403: a bad key, or an endpoint the plan does not include.
+
+    Distinct from rate limiting because the remedy is different and the batch
+    must not continue: repeating a rejected call across 87 symbols produces 87
+    identical warnings and an empty result that looks like "no news".
+    """
+
+
 def _parse_news_item(ticker: str, item: dict) -> RawArticle | None:
     """Convert one Finnhub news payload entry, or None if it is unusable."""
     headline = str(item.get("headline") or "").strip()
@@ -79,9 +88,13 @@ async def fetch_company_news(
         )
         if response.status_code == 429:
             raise FinnhubRateLimited(ticker)
+        if response.status_code in (401, 403):
+            raise FinnhubRejected(
+                f"HTTP {response.status_code} for {ticker}: {response.text[:200]}"
+            )
         response.raise_for_status()
         payload = response.json()
-    except FinnhubRateLimited:
+    except (FinnhubRateLimited, FinnhubRejected):
         raise
     except (httpx.HTTPError, ValueError) as exc:
         logger.warning("Finnhub request failed for %s: %s", ticker, exc)
@@ -136,6 +149,13 @@ async def ingest_finnhub_news(
                     symbol,
                     index,
                     len(symbols),
+                )
+                break
+            except FinnhubRejected as exc:
+                logger.error(
+                    "Finnhub rejected the request, stopping the batch: %s. "
+                    "Check FINNHUB_API_KEY and what your plan covers.",
+                    exc,
                 )
                 break
             if index < len(symbols) - 1:

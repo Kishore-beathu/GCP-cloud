@@ -82,6 +82,7 @@ universe — no code change needed.
 | POST | `/admin/ingest/finnhub` | Trigger a Finnhub news pull now |
 | POST | `/admin/ingest/prices` | Trigger an Alpha Vantage quote refresh now |
 | POST | `/admin/backfill/prices` | Load daily price history for one ticker (`?ticker=MRNA&outputsize=full`) |
+| GET | `/admin/diagnose/sources` | Probe every vendor and report what it said — run this first when the dashboard is empty |
 | GET | `/admin/sentiment/status` | How many stored scores came from an older model version |
 | POST | `/admin/sentiment/rescore` | Re-score stored news with the current lexicon |
 | WS | `/ws/tickers/{ticker}` | Real-time snapshot, price pushes, and alert pushes |
