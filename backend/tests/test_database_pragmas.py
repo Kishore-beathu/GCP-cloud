@@ -62,3 +62,54 @@ async def test_postgres_urls_are_left_alone(tmp_path):
         assert engine.dialect.name == "postgresql"
     finally:
         await engine.dispose()
+
+
+# --- Schema drift -----------------------------------------------------------
+# create_all() adds missing tables and never alters existing ones, so a
+# database made before a column was added keeps working until the first query
+# names that column — then every endpoint touching the table returns 500 with
+# the reason only in the server log.
+
+
+@pytest.mark.asyncio
+async def test_missing_columns_is_empty_for_a_current_database(tmp_path):
+    from app.database import Base, missing_columns
+
+    engine = _build_engine(sqlite_settings(tmp_path))
+    try:
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+        assert await missing_columns(engine) == {}
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_missing_columns_names_the_table_and_column(tmp_path):
+    from sqlalchemy import text as sql
+
+    from app.database import Base, missing_columns
+
+    settings = sqlite_settings(tmp_path)
+    engine = _build_engine(settings)
+    try:
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+            # Rebuild news_articles the way it looked before duplicate_of_id,
+            # which is exactly the state an established dev.db is in.
+            await conn.execute(sql("DROP TABLE news_articles"))
+            await conn.execute(
+                sql(
+                    "CREATE TABLE news_articles ("
+                    "id INTEGER PRIMARY KEY, ticker_id INTEGER, headline TEXT, "
+                    "body TEXT, source VARCHAR(64), url VARCHAR(1024), "
+                    "published_at DATETIME, ingested_at DATETIME)"
+                )
+            )
+
+        drift = await missing_columns(engine)
+
+        assert drift == {"news_articles": ["duplicate_of_id"]}
+    finally:
+        await engine.dispose()

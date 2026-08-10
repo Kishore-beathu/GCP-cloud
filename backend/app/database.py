@@ -152,3 +152,36 @@ async def dispose_engine() -> None:
         await _engine.dispose()
     _engine = None
     _session_factory = None
+
+
+async def missing_columns(engine: AsyncEngine | None = None) -> dict[str, list[str]]:
+    """Columns the models declare that the live database does not have.
+
+    ``create_all`` creates missing tables and never alters existing ones, so a
+    database made before a column was added keeps working right up until the
+    first query mentions that column — at which point every endpoint touching
+    the table returns 500 and the reason is only in the server log.
+
+    Checking at startup turns that into one clear line naming the remedy.
+    """
+    from sqlalchemy import inspect
+
+    engine = engine or get_engine()
+    missing: dict[str, list[str]] = {}
+
+    def _inspect(connection) -> dict[str, list[str]]:
+        inspector = inspect(connection)
+        existing_tables = set(inspector.get_table_names())
+        found: dict[str, list[str]] = {}
+        for table in Base.metadata.sorted_tables:
+            if table.name not in existing_tables:
+                continue
+            live = {column["name"] for column in inspector.get_columns(table.name)}
+            absent = [column.name for column in table.columns if column.name not in live]
+            if absent:
+                found[table.name] = absent
+        return found
+
+    async with engine.connect() as connection:
+        missing = await connection.run_sync(_inspect)
+    return missing

@@ -231,6 +231,40 @@ def _database_fix(exc: Exception, settings, env_keys: set[str]) -> str:
     )
 
 
+async def check_schema() -> None:
+    """Compare the models against the live database.
+
+    A database created before a column was added keeps working until the first
+    query names that column, and then every endpoint touching that table
+    returns 500 with the reason only in the server log. This is the check that
+    turns "Internal server error" into a command to run.
+    """
+    from app.database import dispose_engine, missing_columns
+
+    try:
+        drift = await missing_columns()
+    except Exception as exc:
+        report(WARN, "schema", f"could not be inspected: {type(exc).__name__}: {exc}")
+        return
+    finally:
+        await dispose_engine()
+
+    if not drift:
+        report(OK, "schema", "matches the models")
+        return
+
+    described = "; ".join(f"{table}: {', '.join(cols)}" for table, cols in drift.items())
+    fail(
+        "schema",
+        f"missing column(s) - {described}",
+        "The database predates a schema change, and CREATE_TABLES_ON_STARTUP "
+        "only creates missing tables, never alters existing ones. Apply the "
+        "migrations:\n"
+        "     python -m alembic stamp 3e9022270db3   # only if never used before\n"
+        "     python -m alembic upgrade head",
+    )
+
+
 def check_secrets(settings) -> None:
     """Report presence only. Never print a key."""
     for label, value, consequence in (
@@ -279,6 +313,7 @@ async def main() -> int:
     check_driver(settings, env_keys)
     if not _failed:
         await check_connection(settings, env_keys)
+        await check_schema()
     check_secrets(settings)
 
     _summarise()

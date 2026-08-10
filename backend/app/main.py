@@ -10,7 +10,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.config import get_settings
-from app.database import create_all, dispose_engine, get_session_factory
+from app.database import (
+    create_all,
+    dispose_engine,
+    get_session_factory,
+    missing_columns,
+)
 from app.integrations.finnhub_stream import finnhub_stream
 from app.logging_config import configure_logging
 from app.routers import alerts, auth, backtest, news, portfolios, stocks, system, ws
@@ -42,6 +47,22 @@ async def lifespan(app: FastAPI):
         await create_all()
         async with get_session_factory()() as session:
             await seed_stocks(session)
+
+    # create_all() adds missing tables but never alters existing ones, so a
+    # database created before a column was added stays silently behind and
+    # every query naming that column fails with a 500. Say so once, at startup,
+    # with the command that fixes it.
+    drift = await missing_columns()
+    if drift:
+        for table, columns in drift.items():
+            logger.error(
+                "Database table %r is missing column(s) %s. Requests touching it "
+                "will fail. Apply migrations: `alembic stamp %s && alembic upgrade head` "
+                "(stamp only if this database was never managed by Alembic).",
+                table,
+                ", ".join(columns),
+                "3e9022270db3",
+            )
 
     start_scheduler()
     await finnhub_stream.start()
