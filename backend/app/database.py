@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 
+from sqlalchemy import event
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -50,8 +51,39 @@ def _engine_kwargs(settings: Settings) -> dict[str, object]:
     return kwargs
 
 
+def _configure_sqlite(engine: AsyncEngine) -> None:
+    """Put SQLite in WAL mode, so a write does not stall every reader.
+
+    SQLite defaults to journal_mode=delete, where a writer holds an EXCLUSIVE
+    lock for the length of its transaction and readers wait behind it. That is
+    fine for one ingest job and untenable for eight: a news batch committing a
+    few hundred rows blocks the dashboard's queries and the WebSocket
+    handshake, which surfaces as an app that intermittently cannot be reached
+    at all.
+
+    WAL lets readers continue against the last committed snapshot while a write
+    is in flight. synchronous=NORMAL is the conventional companion — it trades
+    a durability guarantee that matters on power loss for far fewer fsyncs, on
+    a database whose contents are re-fetchable from the vendors. The busy
+    timeout covers writer-versus-writer contention, which WAL does not remove.
+    """
+
+    @event.listens_for(engine.sync_engine, "connect")
+    def _set_pragmas(dbapi_connection, _record):  # pragma: no cover - driver hook
+        cursor = dbapi_connection.cursor()
+        try:
+            cursor.execute("PRAGMA journal_mode=WAL")
+            cursor.execute("PRAGMA synchronous=NORMAL")
+            cursor.execute("PRAGMA busy_timeout=15000")
+        finally:
+            cursor.close()
+
+
 def _build_engine(settings: Settings) -> AsyncEngine:
-    return create_async_engine(settings.database_url, **_engine_kwargs(settings))
+    engine = create_async_engine(settings.database_url, **_engine_kwargs(settings))
+    if settings.is_sqlite:
+        _configure_sqlite(engine)
+    return engine
 
 
 def get_engine() -> AsyncEngine:

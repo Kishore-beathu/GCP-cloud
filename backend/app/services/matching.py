@@ -80,7 +80,16 @@ _TOO_GENERIC = frozenset(
 
 @dataclass(frozen=True)
 class CompanyIndex:
-    """Recognisable names and symbols for the tracked universe."""
+    """Recognisable names and symbols for the tracked universe.
+
+    The derived lookups exist for speed, and the reason is concrete: matching
+    used to test every company name against every headline with its own regex,
+    and re-sort the name list on each call. Across one EDGAR cycle — six forms
+    of a hundred entries — that was over half a second of synchronous CPU work
+    inside the event loop, every two minutes, growing with the universe. On a
+    single-process server that is time the dashboard and the WebSocket are not
+    being served.
+    """
 
     # normalised company name -> every listing of that company. Dual-listed
     # names carry more than one: a story about Novo Nordisk is about the
@@ -89,6 +98,28 @@ class CompanyIndex:
     names: dict[str, tuple[str, ...]]
     # upper-case ticker -> itself, for symbols quoted directly in a headline
     tickers: frozenset[str]
+
+    def __post_init__(self) -> None:
+        # First word of each name -> the names starting with it, longest first.
+        # A headline is then tested only against names whose opening word it
+        # actually contains, which is nearly always none of them.
+        buckets: dict[str, list[str]] = {}
+        for name in self.names:
+            first = name.split(" ", 1)[0]
+            buckets.setdefault(first, []).append(name)
+        for names in buckets.values():
+            names.sort(key=len, reverse=True)
+        object.__setattr__(self, "_by_first_word", buckets)
+
+    def candidates(self, words: set[str]) -> list[str]:
+        """Names worth testing against a text containing these words."""
+        buckets: dict[str, list[str]] = getattr(self, "_by_first_word", {})
+        found: list[str] = []
+        for word in words:
+            found.extend(buckets.get(word, ()))
+        # Longest first, so "Bristol-Myers Squibb" wins over a shorter prefix.
+        found.sort(key=len, reverse=True)
+        return found
 
     def __bool__(self) -> bool:
         return bool(self.names or self.tickers)
@@ -138,10 +169,26 @@ async def build_index(db: AsyncSession) -> CompanyIndex:
     return CompanyIndex(names=names, tickers=frozenset(tickers))
 
 
-def _ticker_pattern(symbol: str) -> re.Pattern[str]:
-    # Symbols carrying a venue suffix (AZN.L) need the dot escaped, and a
-    # bare-word boundary would break on it.
-    return re.compile(rf"(?<![\w.]){re.escape(symbol)}(?![\w.])")
+# An upper-case run that could be a symbol, including venue suffixes (AZN.L)
+# and numeric listings (4502.T, 000660.KS). Anchored so it cannot start or end
+# mid-word, which is what keeps "MU" out of "museum".
+_SYMBOL_TOKEN = re.compile(r"(?<![\w.])([A-Z0-9]{1,7}(?:[.\-][A-Z0-9]{1,4})?)(?![\w.])")
+
+# Symbols that are also ordinary words or abbreviations in upper-case prose.
+# Every one of these is a real ticker in this universe or a common headline
+# token, and matching them by symbol attaches stories to companies they are not
+# about: "A" is Agilent, so a sentence beginning "A study of…" would score
+# against Agilent; "AI" is C3.ai, and appears in half the technology headlines
+# written. They remain matchable by company name, which is unambiguous.
+_AMBIGUOUS_SYMBOLS = frozenset(
+    {
+        "A", "I", "AI", "IT", "ON", "AT", "BE", "SO", "OR", "AS", "BY", "IS",
+        "TO", "DO", "GO", "NO", "UP", "IN", "OF", "AN", "US", "UK", "EU", "FDA",
+        "EMA", "SEC", "CEO", "CFO", "USA", "AND", "THE", "NOT", "CAN", "HAS",
+        "ITS", "NEW", "ONE", "ALL", "FOR", "ARE", "WAS", "PLC", "INC", "LTD",
+        "NYSE", "IPO", "ETF", "GDP", "AGM", "R&D", "M&A", "Q1", "Q2", "Q3", "Q4",
+    }
+)
 
 
 def match_tickers(text: str, index: CompanyIndex, limit: int = 3) -> list[str]:
@@ -162,8 +209,9 @@ def match_tickers(text: str, index: CompanyIndex, limit: int = 3) -> list[str]:
     found: list[str] = []
     companies = 0
     haystack = normalise(text)
+    words = set(haystack.split())
 
-    for name in sorted(index.names, key=len, reverse=True):
+    for name in index.candidates(words):
         if re.search(rf"(?<!\w){re.escape(name)}(?!\w)", haystack):
             new = [t for t in index.names[name] if t not in found]
             if not new:
@@ -174,14 +222,20 @@ def match_tickers(text: str, index: CompanyIndex, limit: int = 3) -> list[str]:
                 return found
 
     # Symbols are matched against the original text: normalisation lower-cases,
-    # and an upper-case symbol is most of what makes "MU" a ticker and not a word.
-    for symbol in sorted(index.tickers):
+    # and an upper-case symbol is most of what makes "MU" a ticker and not a
+    # word. Candidate symbols are lifted out of the text in one pass and
+    # intersected with the universe, rather than running one regex per tracked
+    # symbol against every headline.
+    for symbol in _SYMBOL_TOKEN.findall(text):
         if companies >= limit:
             break
-        if symbol in found:
+        if symbol in found or symbol not in index.tickers:
             continue
-        if _ticker_pattern(symbol).search(text):
-            found.append(symbol)
-            companies += 1
+        # A one-character symbol in prose is a word, an initial or a list
+        # marker far more often than it is a ticker.
+        if len(symbol) < 2 or symbol in _AMBIGUOUS_SYMBOLS:
+            continue
+        found.append(symbol)
+        companies += 1
 
     return found

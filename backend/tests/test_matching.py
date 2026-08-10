@@ -229,3 +229,54 @@ def test_dual_listings_do_not_exhaust_the_company_limit():
 
     assert {"AZN", "AZN.L"} <= set(tickers)
     assert {"NVO", "NOVO-B.CO"} <= set(tickers)
+
+
+# --- Cost -------------------------------------------------------------------
+# This runs inside the event loop on a single-process server, so time spent
+# here is time the dashboard and the WebSocket are not served. It used to test
+# every name against every headline with its own regex and re-sort the name
+# list per call: over half a second per EDGAR cycle, growing with the universe.
+
+
+def test_matching_a_whole_edgar_cycle_stays_fast():
+    """Six forms of a hundred entries, the shape of one firehose run."""
+    import time
+
+    index = real_index()
+    title = "8-K - SOME UNRELATED REGISTRANT CORPORATION (0001234567) (Filer)"
+
+    started = time.perf_counter()
+    for _ in range(600):
+        match_tickers(title, index, limit=1)
+    elapsed = time.perf_counter() - started
+
+    # Generous versus the ~0.02s measured, so this fails on a regression to
+    # per-name scanning rather than on a slow machine.
+    assert elapsed < 0.25, f"{elapsed:.2f}s for 600 entries"
+
+
+def test_the_fast_path_did_not_change_what_matches():
+    """Bucketing by first word must not quietly narrow the results."""
+    index = real_index()
+
+    assert "PFE" in match_tickers("Pfizer reports positive phase 3 data", index)
+    assert "MU" in match_tickers("Shares of MU rose after the report", index)
+    assert "AZN.L" in match_tickers("AZN.L closed higher in London", index)
+    assert match_tickers("The museum expanded its collection", index) == []
+    assert match_tickers("A quiet day with no companies named", index) == []
+
+
+def test_single_letter_and_wordlike_symbols_are_not_matched_in_prose():
+    """"A" is Agilent and "AI" is C3.ai; both are also ordinary text.
+
+    Matching them by symbol attaches unrelated stories to those companies —
+    a sentence opening "A study of…" would score against Agilent. They stay
+    reachable by company name, which is unambiguous.
+    """
+    index = real_index()
+
+    assert match_tickers("A study of the new therapy was published", index) == []
+    assert match_tickers("AI demand drove the quarter", index) == []
+    assert match_tickers("Revenue in the US and UK grew", index) == []
+    # A genuine two-letter symbol still matches.
+    assert "MU" in match_tickers("Shares of MU rose after the report", index)
