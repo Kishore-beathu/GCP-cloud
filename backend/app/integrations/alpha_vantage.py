@@ -53,6 +53,15 @@ class AlphaVantageThrottled(Exception):
     """Raised when the API returns its rate-limit note; the batch should stop."""
 
 
+class AlphaVantageRejected(Exception):
+    """Raised when the API rejects the call outright.
+
+    A bad key, an unsupported symbol and a premium-only endpoint all arrive as
+    HTTP 200 with an explanatory string, so without this they are
+    indistinguishable from a symbol that genuinely has no data.
+    """
+
+
 def _to_float(value: object) -> float | None:
     try:
         return float(value)  # type: ignore[arg-type]
@@ -68,11 +77,27 @@ def _to_int(value: object) -> int | None:
 
 
 def _check_throttle(payload: dict) -> None:
-    """Alpha Vantage reports rate limiting as HTTP 200 with a Note/Information key."""
+    """Surface Alpha Vantage's own explanation instead of returning empty data.
+
+    Every failure mode here is an HTTP 200 whose body carries the reason:
+    rate limiting under ``Note``/``Information``, and rejected calls under
+    ``Error Message``. Both used to fall through to "no rows parsed", which
+    reads to a caller exactly like a symbol with no history.
+    """
     for key in ("Note", "Information"):
         message = payload.get(key)
-        if message and ("call frequency" in str(message) or "rate limit" in str(message).lower()):
-            raise AlphaVantageThrottled(str(message))
+        if not message:
+            continue
+        text = str(message)
+        lowered = text.lower()
+        if "call frequency" in text or "rate limit" in lowered:
+            raise AlphaVantageThrottled(text)
+        # "Information" also carries premium-endpoint and bad-key notices.
+        raise AlphaVantageRejected(text)
+
+    error = payload.get("Error Message")
+    if error:
+        raise AlphaVantageRejected(str(error))
 
 
 def parse_global_quote(symbol: str, payload: dict) -> Quote | None:
@@ -143,7 +168,7 @@ async def fetch_global_quote(
         )
         response.raise_for_status()
         return parse_global_quote(symbol, response.json())
-    except AlphaVantageThrottled:
+    except (AlphaVantageThrottled, AlphaVantageRejected):
         raise
     except (httpx.HTTPError, ValueError) as exc:
         logger.warning("Alpha Vantage quote failed for %s: %s", symbol, exc)
@@ -167,7 +192,7 @@ async def fetch_daily_series(
         )
         response.raise_for_status()
         return parse_daily_series(symbol, response.json())
-    except AlphaVantageThrottled:
+    except (AlphaVantageThrottled, AlphaVantageRejected):
         raise
     except (httpx.HTTPError, ValueError) as exc:
         logger.warning("Alpha Vantage daily series failed for %s: %s", symbol, exc)
@@ -247,6 +272,11 @@ async def update_quotes(db: AsyncSession, tickers: list[str] | None = None) -> d
             except AlphaVantageThrottled as exc:
                 logger.warning("Alpha Vantage throttled at %s: %s", stock.ticker, exc)
                 break
+            except AlphaVantageRejected as exc:
+                # A rejection is about the account or the symbol, not timing.
+                # Stop rather than spend the remaining quota repeating it.
+                logger.error("Alpha Vantage rejected the call at %s: %s", stock.ticker, exc)
+                break
 
             if quote is None:
                 totals["failed"] += 1
@@ -273,12 +303,32 @@ async def backfill_daily(
     settings = get_settings()
     if not settings.alpha_vantage_api_key:
         logger.info("Backfill skipped: ALPHA_VANTAGE_API_KEY is not set")
-        return {"inserted": 0, "updated": 0}
+        return {
+            "inserted": 0,
+            "updated": 0,
+            "note": "ALPHA_VANTAGE_API_KEY is not set, so no request was made.",
+        }
 
-    async with httpx.AsyncClient() as client:
-        quotes = await fetch_daily_series(
-            client, stocks[0].ticker, settings.alpha_vantage_api_key, outputsize
-        )
+    symbol = stocks[0].ticker
+    try:
+        async with httpx.AsyncClient() as client:
+            quotes = await fetch_daily_series(
+                client, symbol, settings.alpha_vantage_api_key, outputsize
+            )
+    except AlphaVantageThrottled as exc:
+        logger.warning("Backfill for %s hit the rate limit: %s", symbol, exc)
+        return {"inserted": 0, "updated": 0, "note": f"Rate limited: {exc}"}
+    except AlphaVantageRejected as exc:
+        logger.warning("Backfill for %s rejected: %s", symbol, exc)
+        return {"inserted": 0, "updated": 0, "note": f"Rejected by Alpha Vantage: {exc}"}
+
     result = await upsert_quotes(db, stocks[0], quotes)
-    logger.info("Backfill for %s: %s", stocks[0].ticker, result)
+    logger.info("Backfill for %s: %s", symbol, result)
+    if not quotes:
+        # A 200 with an empty series and no message: the symbol parsed but the
+        # vendor has no history for it. Common for non-US listings.
+        result["note"] = (
+            f"Alpha Vantage returned no history for {symbol}. Its coverage of "
+            "non-US listings is partial; try the US line if the company has one."
+        )
     return result

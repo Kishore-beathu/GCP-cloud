@@ -10,6 +10,7 @@ from sqlalchemy import func, select
 
 from app.config import get_settings
 from app.integrations.alpha_vantage import (
+    AlphaVantageRejected,
     AlphaVantageThrottled,
     backfill_daily,
     parse_daily_series,
@@ -131,8 +132,115 @@ async def test_backfill_requires_known_ticker(db, seeded_stocks, monkeypatch):
 async def test_backfill_skips_without_key(db, seeded_stocks):
     get_settings.cache_clear()
     result = await backfill_daily(db, "MRNA")
-    assert result == {"inserted": 0, "updated": 0}
+    assert result["inserted"] == 0
+    assert result["updated"] == 0
+    # Say why, rather than reporting zeros that look like "no data available".
+    assert "not set" in result["note"]
 
     # An unknown ticker is still a 404-worthy error, key or no key.
     with pytest.raises(LookupError):
         await backfill_daily(db, "NOSUCH")
+
+
+# --- Vendor explanations ----------------------------------------------------
+# Every one of these arrives as HTTP 200. Returning an empty series for them
+# made a rejected key look identical to a symbol with no history, which is what
+# `{"inserted": 0, "updated": 0}` was hiding.
+
+DAILY_LIMIT_PAYLOAD = {
+    "Information": (
+        "We have detected your API key and our standard API rate limit is 25 "
+        "requests per day."
+    )
+}
+
+BAD_SYMBOL_PAYLOAD = {
+    "Error Message": (
+        "Invalid API call. Please retry or visit the documentation for "
+        "TIME_SERIES_DAILY."
+    )
+}
+
+PREMIUM_PAYLOAD = {
+    "Information": "Thank you for using Alpha Vantage! This is a premium endpoint."
+}
+
+
+def test_daily_limit_is_reported_as_throttling():
+    """The per-day cap is worded differently from the per-minute one."""
+    with pytest.raises(AlphaVantageThrottled) as exc:
+        parse_daily_series("MRNA", DAILY_LIMIT_PAYLOAD)
+    assert "25 requests per day" in str(exc.value)
+
+
+def test_error_message_is_reported_as_rejection():
+    with pytest.raises(AlphaVantageRejected) as exc:
+        parse_daily_series("NOSUCH", BAD_SYMBOL_PAYLOAD)
+    assert "Invalid API call" in str(exc.value)
+
+
+def test_premium_notice_is_reported_as_rejection():
+    with pytest.raises(AlphaVantageRejected):
+        parse_global_quote("MRNA", PREMIUM_PAYLOAD)
+
+
+def _mock_alpha_vantage(monkeypatch, payload: dict) -> None:
+    """Point httpx at a canned Alpha Vantage response."""
+    transport = httpx.MockTransport(lambda request: httpx.Response(200, json=payload))
+    original_client = httpx.AsyncClient
+
+    def patched_client(*args, **kwargs):
+        kwargs["transport"] = transport
+        return original_client(*args, **kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", patched_client)
+
+
+@pytest.mark.asyncio
+async def test_backfill_reports_a_rejection_instead_of_zero(db, seeded_stocks, monkeypatch):
+    """The caller must learn why nothing was stored."""
+    monkeypatch.setenv("ALPHA_VANTAGE_API_KEY", "test-key")
+    get_settings.cache_clear()
+    try:
+        _mock_alpha_vantage(monkeypatch, BAD_SYMBOL_PAYLOAD)
+
+        result = await backfill_daily(db, "MRNA")
+
+        assert result["inserted"] == 0
+        assert "Invalid API call" in result["note"]
+    finally:
+        get_settings.cache_clear()
+
+
+@pytest.mark.asyncio
+async def test_backfill_reports_the_daily_quota(db, seeded_stocks, monkeypatch):
+    """Exhausting 25 calls/day is the failure most likely to be hit first."""
+    monkeypatch.setenv("ALPHA_VANTAGE_API_KEY", "test-key")
+    get_settings.cache_clear()
+    try:
+        _mock_alpha_vantage(monkeypatch, DAILY_LIMIT_PAYLOAD)
+
+        result = await backfill_daily(db, "PFE")
+
+        assert result["inserted"] == 0
+        assert "Rate limited" in result["note"]
+        assert "25 requests per day" in result["note"]
+    finally:
+        get_settings.cache_clear()
+
+
+@pytest.mark.asyncio
+async def test_backfill_explains_an_empty_series(db, seeded_stocks, monkeypatch):
+    """A parsed-but-empty response is a coverage gap, not a failure."""
+    monkeypatch.setenv("ALPHA_VANTAGE_API_KEY", "test-key")
+    get_settings.cache_clear()
+    try:
+        _mock_alpha_vantage(monkeypatch, {"Time Series (Daily)": {}})
+
+        result = await backfill_daily(db, "MRNA")
+
+        assert result["inserted"] == 0
+        assert "no history" in result["note"]
+    finally:
+        get_settings.cache_clear()
+
