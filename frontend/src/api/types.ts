@@ -72,6 +72,22 @@ export interface Price {
   source: string
 }
 
+/** Short windows come from a live endpoint, not the stored daily series. */
+export type IntradayWindow = '1h' | '1d' | '1w'
+
+export interface IntradayPoint {
+  at: string
+  close: number
+}
+
+export interface Intraday {
+  ticker: string
+  window: IntradayWindow
+  interval: string
+  currency: string | null
+  points: IntradayPoint[]
+}
+
 export interface StockDetail extends Stock {
   latest_price: Price | null
   recent_news: NewsArticle[]

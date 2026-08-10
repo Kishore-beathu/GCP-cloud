@@ -5,6 +5,8 @@ import type {
   AlertHistoryEntry,
   AlertType,
   BacktestResult,
+  Intraday,
+  IntradayWindow,
   NewsArticle,
   Portfolio,
   PortfolioDetail,
@@ -132,6 +134,10 @@ export function getStock(ticker: string): Promise<StockDetail> {
 
 export function getPrices(ticker: string, days = 90): Promise<Price[]> {
   return request(`/stocks/${encodeURIComponent(ticker)}/prices?days=${days}`)
+}
+
+export function getIntraday(ticker: string, window: IntradayWindow): Promise<Intraday> {
+  return request(`/stocks/${encodeURIComponent(ticker)}/intraday?window=${window}`)
 }
 
 export function getAlerts(): Promise<Alert[]> {

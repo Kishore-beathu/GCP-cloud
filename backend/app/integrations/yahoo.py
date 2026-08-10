@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from dataclasses import dataclass
 from datetime import datetime, timezone
 
 import httpx
@@ -231,3 +232,110 @@ async def count_unpriced(db: AsyncSession) -> int:
         await db.execute(select(func.count(func.distinct(StockPrice.ticker_id))))
     ).scalar_one()
     return max(0, total - priced)
+
+
+# --- Intraday ----------------------------------------------------------------
+# Short windows need bars, not daily closes, and they are deliberately NOT
+# stored. `stock_prices` holds exactly one row per (ticker, trading day) and the
+# backtester, the portfolio valuation and the watchlist's day-over-day change
+# all rely on that. Writing minute bars into it would make "the previous close"
+# mean "the bar before this one" and quietly corrupt every one of them. Intraday
+# is fetched on demand and cached for a few seconds instead.
+
+# window -> (Yahoo range, Yahoo interval, keep last N points, cache seconds)
+INTRADAY_WINDOWS: dict[str, tuple[str, str, int | None, int]] = {
+    "1h": ("1d", "1m", 60, 30),
+    "1d": ("1d", "5m", None, 60),
+    "1w": ("5d", "15m", None, 300),
+}
+
+
+@dataclass(frozen=True)
+class Bar:
+    """One intraday bar: a moment and a price."""
+
+    at: datetime
+    close: float
+
+
+_intraday_cache: dict[tuple[str, str], tuple[float, list[Bar]]] = {}
+
+
+def parse_intraday(ticker: str, payload: dict, keep_last: int | None) -> list[Bar]:
+    """Read the bar series, dropping the nulls Yahoo pads sessions with."""
+    results = (payload.get("chart") or {}).get("result")
+    if not results:
+        return []
+
+    result = results[0]
+    timestamps = result.get("timestamp") or []
+    blocks = (result.get("indicators") or {}).get("quote") or [{}]
+    closes = (blocks[0] if blocks else {}).get("close") or []
+
+    market = markets.resolve(ticker)
+
+    bars: list[Bar] = []
+    for index, stamp in enumerate(timestamps):
+        if index >= len(closes) or closes[index] is None:
+            continue
+        try:
+            at = datetime.fromtimestamp(int(stamp), tz=timezone.utc)
+        except (ValueError, OSError, OverflowError):
+            continue
+        price = float(closes[index])
+        bars.append(Bar(at=at, close=markets.normalise_price(price, market) if market else price))
+
+    bars.sort(key=lambda bar: bar.at)
+    return bars[-keep_last:] if keep_last else bars
+
+
+async def fetch_intraday(ticker: str, window: str) -> list[Bar]:
+    """Bars for one symbol over a short window, cached briefly.
+
+    The cache exists because a dashboard re-requests the same window on every
+    ticker click and range toggle; without it a few minutes of clicking would
+    look like abuse to an endpoint nobody is paying for.
+    """
+    settings = get_settings()
+    if not settings.yahoo_prices_enabled:
+        return []
+
+    range_, interval, keep_last, ttl = INTRADAY_WINDOWS[window]
+    key = (ticker.upper(), window)
+    now = asyncio.get_event_loop().time()
+
+    cached = _intraday_cache.get(key)
+    if cached and now - cached[0] < ttl:
+        return cached[1]
+
+    async with httpx.AsyncClient() as client:
+        try:
+            response = await client.get(
+                CHART_URL.format(symbol=ticker),
+                params={"interval": interval, "range": range_, "includePrePost": "false"},
+                headers=HEADERS,
+                timeout=30.0,
+            )
+        except httpx.HTTPError as exc:
+            logger.warning("Yahoo intraday failed for %s: %s", ticker, exc)
+            return []
+
+    if response.status_code == 429:
+        raise YahooUnavailable(f"HTTP 429 for {ticker} intraday - being rate limited")
+    if response.status_code != 200:
+        logger.debug("Yahoo intraday returned HTTP %s for %s", response.status_code, ticker)
+        return []
+
+    try:
+        payload = response.json()
+    except ValueError:
+        return []
+
+    bars = parse_intraday(ticker, payload, keep_last)
+    _intraday_cache[key] = (now, bars)
+    return bars
+
+
+def clear_intraday_cache() -> None:
+    """Drop cached bars. Used by tests, and safe to call at any time."""
+    _intraday_cache.clear()

@@ -9,42 +9,81 @@ import {
   YAxis,
 } from 'recharts'
 
-import { getPrices } from '../api/client'
+import { getIntraday, getPrices } from '../api/client'
+import type { IntradayWindow } from '../api/types'
 import { useAsync } from '../hooks/useAsync'
 
-const RANGES = [
-  { label: '1M', days: 30 },
-  { label: '3M', days: 90 },
-  { label: '1Y', days: 365 },
-  { label: '5Y', days: 1825 },
+/**
+ * Two kinds of range, deliberately.
+ *
+ * The short windows are intraday bars fetched live — the stored series holds
+ * one row per trading day, so it cannot draw an hour. The long ones read that
+ * stored series, which is what the backtester and the portfolio value too.
+ */
+type Range =
+  | { label: string; kind: 'intraday'; window: IntradayWindow }
+  | { label: string; kind: 'daily'; days: number }
+
+const RANGES: Range[] = [
+  { label: '1H', kind: 'intraday', window: '1h' },
+  { label: '1D', kind: 'intraday', window: '1d' },
+  { label: '1W', kind: 'intraday', window: '1w' },
+  { label: '1M', kind: 'daily', days: 30 },
+  { label: '3M', kind: 'daily', days: 90 },
+  { label: '1Y', kind: 'daily', days: 365 },
+  { label: '5Y', kind: 'daily', days: 1825 },
 ]
+
+const TIME = new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-digit' })
+const DAY_AND_TIME = new Intl.DateTimeFormat(undefined, {
+  day: '2-digit',
+  month: 'short',
+  hour: '2-digit',
+  minute: '2-digit',
+})
 
 interface Props {
   ticker: string
 }
 
 export function PriceChart({ ticker }: Props) {
-  const [days, setDays] = useState(90)
-  const { data, error, loading } = useAsync(() => getPrices(ticker, days), [ticker, days])
+  const [label, setLabel] = useState('3M')
+  const range = RANGES.find((option) => option.label === label) ?? RANGES[4]
 
-  const points =
-    data?.map((price) => ({
-      date: price.price_date.slice(0, 10),
-      close: price.close,
-    })) ?? []
+  const { data, error, loading } = useAsync(
+    () =>
+      range.kind === 'intraday'
+        ? getIntraday(ticker, range.window).then((result) =>
+            // A 1H chart labels points by time; a 1W chart needs the day too,
+            // or Monday 10:00 and Friday 10:00 read identically.
+            result.points.map((point) => ({
+              date: (range.window === '1w' ? DAY_AND_TIME : TIME).format(new Date(point.at)),
+              close: point.close,
+            })),
+          )
+        : getPrices(ticker, range.days).then((prices) =>
+            prices.map((price) => ({
+              date: price.price_date.slice(0, 10),
+              close: price.close,
+            })),
+          ),
+    [ticker, label],
+  )
+
+  const points = data ?? []
 
   return (
     <section className="panel chart">
       <header>
         <h2>{ticker} price</h2>
         <div className="filters">
-          {RANGES.map((range) => (
+          {RANGES.map((option) => (
             <button
-              key={range.label}
-              className={range.days === days ? 'ghost active' : 'ghost'}
-              onClick={() => setDays(range.days)}
+              key={option.label}
+              className={option.label === label ? 'ghost active' : 'ghost'}
+              onClick={() => setLabel(option.label)}
             >
-              {range.label}
+              {option.label}
             </button>
           ))}
         </div>
@@ -54,8 +93,19 @@ export function PriceChart({ ticker }: Props) {
       {error && <p className="error">Failed to load prices: {error}</p>}
       {!loading && !error && points.length === 0 && (
         <p className="muted">
-          No price history yet. Backfill it with{' '}
-          <code>POST /admin/backfill/prices?ticker={ticker}&amp;outputsize=full</code>.
+          {range.kind === 'intraday' ? (
+            <>
+              No intraday bars for {ticker} in this window. Intraday comes from a live
+              feed rather than stored history — a symbol it does not carry, or a market
+              that has not traded today, shows nothing here. The daily ranges will still
+              work.
+            </>
+          ) : (
+            <>
+              No price history yet. Load it with{' '}
+              <code>POST /admin/ingest/yahoo?ticker={ticker}&amp;only_missing=false</code>.
+            </>
+          )}
         </p>
       )}
 

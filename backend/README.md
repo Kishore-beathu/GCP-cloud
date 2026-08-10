@@ -66,6 +66,7 @@ universe — no code change needed.
 | GET | `/stocks` | Search the universe: `q`, `sector`, `region`, `country`, `mic`, `currency` |
 | GET | `/stocks/markets` | Venues tracked, per-region counts, and which are open now |
 | GET | `/stocks/{ticker}` | Detail: latest price + recent scored news |
+| GET | `/stocks/{ticker}/intraday` | Intraday bars for a short window (`?window=1h`, `1d`, `1w`) |
 | POST | `/alerts` | Create an alert (`positive_news`, `negative_news`, `sentiment_spike`, `event_type`, `price_change`) |
 | GET | `/alerts` | List alerts; `/alerts/history` shows firings |
 | DELETE | `/alerts/{id}` | Deactivate (history is kept) |

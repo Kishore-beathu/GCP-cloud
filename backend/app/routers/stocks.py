@@ -9,6 +9,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
+from app.integrations.yahoo import INTRADAY_WINDOWS, YahooUnavailable, fetch_intraday
 from app.models import NewsArticle, SentimentScore, Stock, StockPrice
 from app.routers.news import to_news_out
 from app.services import markets
@@ -182,6 +183,48 @@ async def get_price_history(
         )
     ).scalars()
     return list(rows)
+
+
+@router.get(
+    "/{ticker}/intraday",
+    summary="Intraday bars for a short window (1h, 1d, 1w)",
+)
+async def get_intraday(
+    ticker: str,
+    window: str = Query(default="1d", description="1h, 1d or 1w"),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Bars for the last hour, day or week.
+
+    Served live rather than from `stock_prices`, which holds one row per
+    trading day: mixing minute bars into it would redefine "the previous
+    close" for the backtester, the portfolio valuation and the watchlist's
+    day-over-day change. Responses are cached for a few seconds, so toggling
+    ranges does not hammer the upstream.
+    """
+    stock = await get_stock_or_404(db, ticker)
+
+    if window not in INTRADAY_WINDOWS:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"window must be one of {sorted(INTRADAY_WINDOWS)}",
+        )
+
+    try:
+        bars = await fetch_intraday(stock.ticker, window)
+    except YahooUnavailable as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
+        ) from exc
+
+    _, interval, _, _ = INTRADAY_WINDOWS[window]
+    return {
+        "ticker": stock.ticker,
+        "window": window,
+        "interval": interval,
+        "currency": stock.currency,
+        "points": [{"at": bar.at.isoformat(), "close": bar.close} for bar in bars],
+    }
 
 
 @router.get("/{ticker}", response_model=StockDetail, summary="Stock detail with latest price")

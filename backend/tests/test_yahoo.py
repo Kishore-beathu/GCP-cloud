@@ -235,3 +235,138 @@ async def test_count_unpriced_tracks_progress(db, seeded_stocks):
     await db.commit()
 
     assert await count_unpriced(db) == 1
+
+
+# --- Intraday ---------------------------------------------------------------
+# Short windows are served live and never stored: stock_prices holds one row
+# per trading day, and minute bars in that table would redefine "the previous
+# close" for the backtester, the valuation and the watchlist change column.
+
+INTRADAY_PAYLOAD = {
+    "chart": {
+        "result": [
+            {
+                "meta": {"currency": "USD", "symbol": "PFE"},
+                "timestamp": [1786665600, 1786665660, 1786665720],
+                "indicators": {"quote": [{"close": [26.10, 26.14, 26.08]}]},
+            }
+        ],
+        "error": None,
+    }
+}
+
+
+def test_parse_intraday_reads_bars_oldest_first():
+    from app.integrations.yahoo import parse_intraday
+
+    bars = parse_intraday("PFE", INTRADAY_PAYLOAD, None)
+
+    assert [bar.close for bar in bars] == [26.10, 26.14, 26.08]
+    assert bars[0].at < bars[-1].at
+    assert bars[0].at.tzinfo is timezone.utc
+
+
+def test_parse_intraday_keeps_only_the_requested_tail():
+    """The 1h window asks for a day of minutes and keeps the last 60."""
+    from app.integrations.yahoo import parse_intraday
+
+    bars = parse_intraday("PFE", INTRADAY_PAYLOAD, 2)
+
+    assert [bar.close for bar in bars] == [26.14, 26.08]
+
+
+def test_parse_intraday_converts_london_pence():
+    from app.integrations.yahoo import parse_intraday
+
+    payload = {
+        "chart": {
+            "result": [
+                {
+                    "timestamp": [1786665600],
+                    "indicators": {"quote": [{"close": [12040.0]}]},
+                }
+            ]
+        }
+    }
+
+    assert parse_intraday("AZN.L", payload, None)[0].close == 120.40
+
+
+def test_parse_intraday_drops_null_bars():
+    from app.integrations.yahoo import parse_intraday
+
+    payload = {
+        "chart": {
+            "result": [
+                {
+                    "timestamp": [1786665600, 1786665660],
+                    "indicators": {"quote": [{"close": [None, 26.14]}]},
+                }
+            ]
+        }
+    }
+
+    assert [bar.close for bar in parse_intraday("PFE", payload, None)] == [26.14]
+
+
+@pytest.mark.asyncio
+async def test_intraday_endpoint_returns_points(client, seeded_stocks, monkeypatch):
+    from app.integrations import yahoo
+
+    yahoo.clear_intraday_cache()
+    _mock_yahoo(monkeypatch, lambda request: httpx.Response(200, json=INTRADAY_PAYLOAD))
+
+    body = (await client.get("/stocks/PFE/intraday?window=1h")).json()
+
+    assert body["ticker"] == "PFE"
+    assert body["window"] == "1h"
+    assert body["interval"] == "1m"
+    assert len(body["points"]) == 3
+    assert body["points"][0]["close"] == 26.10
+
+
+@pytest.mark.asyncio
+async def test_intraday_endpoint_rejects_an_unknown_window(client, seeded_stocks):
+    assert (await client.get("/stocks/PFE/intraday?window=3y")).status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_intraday_endpoint_404s_for_an_untracked_ticker(client, seeded_stocks):
+    assert (await client.get("/stocks/NOSUCH/intraday")).status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_intraday_is_cached_between_calls(client, seeded_stocks, monkeypatch):
+    """A dashboard re-requests the same window on every click; ask upstream once."""
+    from app.integrations import yahoo
+
+    yahoo.clear_intraday_cache()
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(str(request.url))
+        return httpx.Response(200, json=INTRADAY_PAYLOAD)
+
+    _mock_yahoo(monkeypatch, handler)
+
+    await client.get("/stocks/PFE/intraday?window=1d")
+    await client.get("/stocks/PFE/intraday?window=1d")
+
+    assert len(calls) == 1
+
+    # A different window is a different question, so it does hit upstream.
+    await client.get("/stocks/PFE/intraday?window=1w")
+    assert len(calls) == 2
+
+    yahoo.clear_intraday_cache()
+
+
+@pytest.mark.asyncio
+async def test_intraday_reports_upstream_rate_limiting(client, seeded_stocks, monkeypatch):
+    from app.integrations import yahoo
+
+    yahoo.clear_intraday_cache()
+    _mock_yahoo(monkeypatch, lambda request: httpx.Response(429, text=""))
+
+    assert (await client.get("/stocks/PFE/intraday?window=1h")).status_code == 503
+    yahoo.clear_intraday_cache()
