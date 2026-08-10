@@ -56,6 +56,10 @@ export interface Stock {
   /** ISO 4217, except 'GBp' for London, whose prices are quoted in pence. */
   currency: string | null
   market_cap: number | null
+  /** Last stored close. Live ticks override it, but this fills the rest. */
+  last_price: number | null
+  last_change_pct: number | null
+  last_price_date: string | null
 }
 
 export interface Price {

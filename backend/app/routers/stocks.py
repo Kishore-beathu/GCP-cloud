@@ -33,7 +33,7 @@ async def list_stocks(
     limit: int = Query(default=100, ge=1, le=1000),
     offset: int = Query(default=0, ge=0),
     db: AsyncSession = Depends(get_db),
-) -> list[Stock]:
+) -> list[StockOut]:
     """Filter the universe by market, sector, or free text.
 
     Filters combine with AND, so ``?region=europe&sector=biotech`` narrows to
@@ -62,7 +62,57 @@ async def list_stocks(
         query = query.where(Stock.currency == currency.strip())
 
     query = query.order_by(Stock.ticker).limit(limit).offset(offset)
-    return list((await db.execute(query)).scalars())
+    stocks = list((await db.execute(query)).scalars())
+    return await _with_latest_prices(db, stocks)
+
+
+async def _with_latest_prices(db: AsyncSession, stocks: list[Stock]) -> list[StockOut]:
+    """Attach each stock's last close and day-over-day change.
+
+    Without this the only path to a price is a WebSocket push, and the client
+    subscribes to a bounded number of symbols — so most of a large watchlist
+    showed a dash forever, whatever the database held. Live ticks still take
+    precedence in the UI; this is what fills the rest, and what shows anything
+    at all before the first push arrives.
+    """
+    if not stocks:
+        return []
+
+    ranked = (
+        select(
+            StockPrice.ticker_id,
+            StockPrice.close,
+            StockPrice.price_date,
+            func.row_number()
+            .over(
+                partition_by=StockPrice.ticker_id,
+                order_by=StockPrice.price_date.desc(),
+            )
+            .label("rank"),
+        )
+        .where(StockPrice.ticker_id.in_([stock.id for stock in stocks]))
+        .subquery()
+    )
+
+    # Two rows per ticker: the latest close, and the one before it for the change.
+    recent: dict[int, list] = {}
+    for row in (await db.execute(select(ranked).where(ranked.c.rank <= 2))).all():
+        recent.setdefault(row.ticker_id, []).append(row)
+
+    out = []
+    for stock in stocks:
+        rows = sorted(recent.get(stock.id, []), key=lambda row: row.rank)
+        item = StockOut.model_validate(stock)
+        if rows:
+            latest = rows[0]
+            item.last_price = latest.close
+            item.last_price_date = latest.price_date
+            if len(rows) > 1 and rows[1].close:
+                item.last_change_pct = round(
+                    (latest.close - rows[1].close) / rows[1].close * 100, 4
+                )
+        out.append(item)
+    return out
 
 
 @router.get("/markets", summary="Venues in the universe, with session state")

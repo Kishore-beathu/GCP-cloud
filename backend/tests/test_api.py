@@ -459,3 +459,69 @@ async def test_portfolio_flags_mixed_currency_holdings(client, db, multi_region)
     assert mixed["mixed_currency"] is True
     assert mixed["positions_by_currency"] == {"USD": 300.0, "JPY": 40000.0}
     assert {p["currency"] for p in mixed["positions"]} == {"USD", "JPY"}
+
+
+# --- Watchlist prices -------------------------------------------------------
+# The client subscribes to a bounded number of symbols over the WebSocket, so
+# a price that arrives only by push leaves most of a large watchlist blank
+# forever. GET /stocks carries the last stored close so every row can render.
+
+
+@pytest.mark.asyncio
+async def test_stock_list_carries_the_last_close(client, db, seeded_stocks):
+    from datetime import datetime, timedelta, timezone
+
+    from app.models import StockPrice
+
+    mrna = seeded_stocks[0]
+    today = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    db.add_all(
+        [
+            StockPrice(
+                ticker_id=mrna.id, close=100.0, price_date=today - timedelta(days=1),
+                source="finnhub",
+            ),
+            StockPrice(ticker_id=mrna.id, close=110.0, price_date=today, source="finnhub"),
+        ]
+    )
+    await db.commit()
+
+    rows = (await client.get("/stocks")).json()
+    by_ticker = {row["ticker"]: row for row in rows}
+
+    assert by_ticker["MRNA"]["last_price"] == 110.0
+    # 100 -> 110 is +10%, computed from the previous stored day.
+    assert by_ticker["MRNA"]["last_change_pct"] == 10.0
+    assert by_ticker["MRNA"]["last_price_date"] is not None
+
+
+@pytest.mark.asyncio
+async def test_stock_list_reports_null_without_prices(client, seeded_stocks):
+    """A symbol no vendor covers must read as unknown, not as zero."""
+    rows = (await client.get("/stocks")).json()
+
+    assert all(row["last_price"] is None for row in rows)
+    assert all(row["last_change_pct"] is None for row in rows)
+
+
+@pytest.mark.asyncio
+async def test_stock_list_needs_two_days_for_a_change(client, db, seeded_stocks):
+    """One stored day gives a price but no basis for a percentage."""
+    from datetime import datetime, timezone
+
+    from app.models import StockPrice
+
+    db.add(
+        StockPrice(
+            ticker_id=seeded_stocks[1].id,
+            close=42.5,
+            price_date=datetime.now(timezone.utc),
+            source="finnhub",
+        )
+    )
+    await db.commit()
+
+    row = next(r for r in (await client.get("/stocks")).json() if r["ticker"] == "PFE")
+
+    assert row["last_price"] == 42.5
+    assert row["last_change_pct"] is None

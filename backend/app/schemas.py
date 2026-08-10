@@ -43,6 +43,11 @@ class StockBase(ORMModel):
 
 class StockOut(StockBase):
     id: int
+    # The last stored close, so a list renders prices immediately rather than
+    # waiting on a WebSocket push that only covers the subscribed few.
+    last_price: float | None = None
+    last_change_pct: float | None = None
+    last_price_date: datetime | None = None
 
 
 class PriceOut(ORMModel):

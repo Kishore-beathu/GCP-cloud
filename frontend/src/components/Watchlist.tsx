@@ -61,7 +61,12 @@ export function Watchlist({
       </select>
       <ul>
         {visible.map((stock) => {
+          // A live tick is the freshest number, but only the subscribed few
+          // ever get one. Everything else falls back to the last stored close
+          // rather than showing a dash forever.
           const live = prices[stock.ticker]
+          const price = live?.price ?? stock.last_price
+          const change = live?.change ?? stock.last_change_pct
           return (
             <li key={stock.ticker}>
               <button
@@ -73,9 +78,9 @@ export function Watchlist({
                   {stock.company_name}
                 </span>
                 <span className="price">
-                  {live?.price != null ? live.price.toFixed(2) : '—'}
+                  {price != null ? price.toFixed(2) : '—'}
                 </span>
-                <ChangeText value={live?.change} />
+                <ChangeText value={change ?? undefined} />
               </button>
             </li>
           )
