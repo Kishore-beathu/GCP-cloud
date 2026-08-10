@@ -50,17 +50,11 @@ class Wire:
 
 # Health and technology categories only. The general business feeds carry
 # thousands of releases a day, almost none of them about this universe.
+# GlobeNewswire is deliberately absent: both of its category feeds read-timeout
+# rather than answering, and a source that reliably times out costs a request
+# slot every cycle and returns nothing. Add it back through NEWSWIRE_FEEDS if it
+# answers for you.
 WIRES: tuple[Wire, ...] = (
-    Wire(
-        key="globenewswire_health",
-        name="GlobeNewswire Health",
-        url="https://www.globenewswire.com/RssFeed/subjectcode/23-Health/feedTitle/GlobeNewswire%20-%20Health",
-    ),
-    Wire(
-        key="globenewswire_tech",
-        name="GlobeNewswire Technology",
-        url="https://www.globenewswire.com/RssFeed/subjectcode/37-Technology/feedTitle/GlobeNewswire%20-%20Technology",
-    ),
     Wire(
         key="businesswire_health",
         name="Business Wire Health",

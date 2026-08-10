@@ -167,7 +167,14 @@ async def ingest_fda(db: AsyncSession, lookback_days: int | None = None) -> Inge
             payload = await fetch_enforcement(client, endpoint, since, settings.fda_batch_size)
             collected.extend(parse_enforcement(payload, index, endpoint))
 
-        for entry in await fetch_feed(client, settings.fda_press_feed):
+        # Skipped when unset, so the structured enforcement data above still
+        # runs without a working newsroom URL.
+        press_entries = (
+            await fetch_feed(client, settings.fda_press_feed)
+            if settings.fda_press_feed
+            else []
+        )
+        for entry in press_entries:
             if entry.published_at < cutoff:
                 continue
             # Press releases name the company in the title or the summary;

@@ -432,3 +432,93 @@ def test_trials_without_a_tracked_sponsor_are_dropped():
     }
 
     assert parse_studies(payload, index_for(**{"Moderna Inc.": "MRNA"})) == []
+
+
+# --- Sources that work without their optional feed ---------------------------
+# Half of each of these sources is a JSON API and half is an RSS feed. When a
+# publisher moves the feed, the API half must keep running rather than the
+# whole source going dark.
+
+
+@pytest.mark.asyncio
+async def test_fda_runs_without_a_press_feed_url(db, seeded_stocks, monkeypatch):
+    """openFDA enforcement is the more valuable half and needs no feed URL."""
+    from app.integrations.fda import ingest_fda
+
+    monkeypatch.setenv("FDA_PRESS_FEED", "")
+    get_settings.cache_clear()
+    try:
+        requested: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            requested.append(str(request.url))
+            return httpx.Response(
+                200,
+                json={
+                    "results": [
+                        {
+                            "recalling_firm": "Moderna Inc.",
+                            "product_description": "mRNA-1273 vials",
+                            "classification": "Class II",
+                            "reason_for_recall": "Labelling error",
+                            "recall_number": "D-9999-2026",
+                            "report_date": "20260810",
+                        }
+                    ]
+                },
+            )
+
+        mock_http(monkeypatch, handler)
+
+        report = await ingest_fda(db)
+
+        assert report.added == 1
+        # Only the openFDA endpoints were called; no feed request was made.
+        assert all("api.fda.gov" in url for url in requested)
+    finally:
+        get_settings.cache_clear()
+
+
+@pytest.mark.asyncio
+async def test_clinical_runs_without_an_ema_feed_url(db, seeded_stocks, monkeypatch):
+    from app.integrations.clinical import ingest_clinical_and_regulatory
+
+    monkeypatch.setenv("EMA_FEED", "")
+    get_settings.cache_clear()
+    try:
+        requested: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            requested.append(str(request.url))
+            return httpx.Response(
+                200,
+                json={
+                    "studies": [
+                        {
+                            "protocolSection": {
+                                "identificationModule": {
+                                    "nctId": "NCT9",
+                                    "briefTitle": "A study of mRNA-1283",
+                                },
+                                "statusModule": {
+                                    "overallStatus": "TERMINATED",
+                                    "lastUpdatePostDateStruct": {"date": "2026-08-10"},
+                                },
+                                "sponsorCollaboratorsModule": {
+                                    "leadSponsor": {"name": "Moderna Inc."}
+                                },
+                                "designModule": {"phases": ["PHASE3"]},
+                            }
+                        }
+                    ]
+                },
+            )
+
+        mock_http(monkeypatch, handler)
+
+        report = await ingest_clinical_and_regulatory(db)
+
+        assert report.added == 1
+        assert all("clinicaltrials.gov" in url for url in requested)
+    finally:
+        get_settings.cache_clear()

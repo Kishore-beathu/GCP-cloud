@@ -147,10 +147,13 @@ class Settings(BaseSettings):
     # Publisher feed URLs are settings, not constants. Every one of these is a
     # third party's routing decision, and when one moves the fix should be a
     # line in .env rather than a code change and a redeploy.
-    fda_press_feed: str = (
-        "https://www.fda.gov/about-fda/contact-fda/stay-informed/rss-feeds/"
-        "press-releases/rss.xml"
-    )
+    # Empty by default: the documented newsroom RSS path answers 404, and a
+    # default that always fails is worse than an absent one — it produces a
+    # broken source in every diagnostic run and teaches you to ignore them.
+    # openFDA's structured enforcement data, the more valuable half, needs no
+    # feed URL and runs regardless. Set this when you have a URL you have
+    # checked returns XML.
+    fda_press_feed: str = ""
     fda_interval_minutes: int = 15
     fda_lookback_days: int = 3
     fda_batch_size: int = 100
@@ -179,7 +182,10 @@ class Settings(BaseSettings):
 
     # Trial status changes and EMA opinions: slower, but the primary record.
     clinical_enabled: bool = True
-    ema_feed: str = "https://www.ema.europa.eu/en/rss.xml"
+    # Also empty by default. EMA answers 404 on the documented path and its
+    # site sits behind bot protection, so this needs a verified URL rather than
+    # a guess. ClinicalTrials.gov, the other half of this source, is unaffected.
+    ema_feed: str = ""
     clinical_interval_minutes: int = 60
     clinical_lookback_days: int = 3
     clinical_batch_size: int = 100

@@ -301,6 +301,30 @@ async def test_feed_probe_separates_unreachable_from_unmatched():
 
 
 @pytest.mark.asyncio
+async def test_feed_probe_distinguishes_an_empty_channel_from_dropped_items():
+    """A quiet feed and an unparseable one look identical without this."""
+    from app.services.diagnostics import probe_feed
+    from app.services.matching import CompanyIndex
+
+    index = CompanyIndex(names={}, tickers=frozenset())
+
+    empty = '<rss version="2.0"><channel><title>Quiet</title></channel></rss>'
+    async with client_returning(httpx.Response(200, text=empty)) as client:
+        quiet = await probe_feed(client, "wire", "https://e.com/rss", index)
+
+    # Items present, but every date is in a format nothing recognises.
+    unreadable = """<rss version="2.0"><channel>
+      <item><title>A</title><link>u1</link><pubDate>10/08/2026 09:00</pubDate></item>
+    </channel></rss>"""
+    async with client_returning(httpx.Response(200, text=unreadable)) as client:
+        dropped = await probe_feed(client, "wire", "https://e.com/rss", index)
+
+    assert "contains no items right now" in quiet.detail
+    assert "dropped for unreadable date" in dropped.detail
+    assert dropped.entries == 1  # seen, then discarded
+
+
+@pytest.mark.asyncio
 async def test_feed_probe_flags_a_changed_feed_shape():
     """Reachable but unparseable is a third distinct failure."""
     from app.services.diagnostics import probe_feed
@@ -312,5 +336,5 @@ async def test_feed_probe_flags_a_changed_feed_shape():
 
     assert not probe.ok
     # Naming what came back separates an HTML error page from a moved element.
-    assert "Reachable but nothing parsed" in probe.detail
+    assert "root element is <html>" in probe.detail
     assert "not a feed" in probe.detail

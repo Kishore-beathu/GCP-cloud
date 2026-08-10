@@ -148,7 +148,10 @@ async def ingest_clinical_and_regulatory(
         payload = await fetch_studies(client, since, settings.clinical_batch_size)
         collected.extend(parse_studies(payload, index))
 
-        for entry in await fetch_feed(client, settings.ema_feed):
+        ema_entries = (
+            await fetch_feed(client, settings.ema_feed) if settings.ema_feed else []
+        )
+        for entry in ema_entries:
             if entry.published_at < since:
                 continue
             tickers = match_tickers(entry.title, index, limit=2)

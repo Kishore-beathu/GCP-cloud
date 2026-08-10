@@ -282,7 +282,7 @@ async def probe_feed(
     params: dict | None = None,
 ) -> FeedProbe:
     """Fetch one feed and report entries seen and entries naming a tracked name."""
-    from app.services.feeds import DEFAULT_USER_AGENT, parse_feed
+    from app.services.feeds import DEFAULT_USER_AGENT, parse_feed_with_report
     from app.services.matching import match_tickers
 
     started = time.perf_counter()
@@ -314,20 +314,21 @@ async def probe_feed(
             elapsed,
         )
 
-    entries = parse_feed(response.text)
+    entries, parse_report = parse_feed_with_report(response.text)
     if not entries:
-        # Say what actually came back. "No entries parsed" is the same message
-        # for an HTML error page, a JSON API and a feed whose element names
-        # moved, and those need different fixes.
+        # Say what actually came back, and why nothing survived. "No entries"
+        # is the same message for an empty channel, an HTML error page, and a
+        # feed whose dates stopped being readable — and those need opposite
+        # responses: wait, fix the URL, fix the parser.
         content_type = response.headers.get("content-type", "unknown")
         preview = " ".join(response.text[:160].split())
         return FeedProbe(
             source,
             url,
             False,
+            parse_report.items_seen,
             0,
-            0,
-            f"Reachable but nothing parsed. Content-Type: {content_type}. "
+            f"{parse_report.summary()} Content-Type: {content_type}. "
             f"Body starts: {preview}",
             elapsed,
         )
@@ -382,9 +383,102 @@ async def probe_news_sources(settings: Settings, db) -> dict:
         for wire in wires:
             probes.append(await probe_feed(client, f"newswire:{wire.key}", wire.url, index))
 
+    # The JSON sources were never probed, so "FDA is down" could mean only
+    # that its press feed URL moved while the structured data was fine.
+    json_probes = await _probe_json_sources(settings)
+
     return {
         "tracked_companies": len(index.names),
-        "reachable": [p.source for p in probes if p.ok],
-        "unreachable": [p.source for p in probes if not p.ok],
+        "reachable": [p.source for p in probes if p.ok] + [
+            p["source"] for p in json_probes if p["ok"]
+        ],
+        "unreachable": [p.source for p in probes if not p.ok] + [
+            p["source"] for p in json_probes if not p["ok"]
+        ],
         "feeds": [p.as_dict() for p in probes],
+        "apis": json_probes,
     }
+
+
+async def _probe_json_sources(settings: Settings) -> list[dict]:
+    """Probe the two sources that speak JSON rather than XML."""
+    from datetime import date as date_type
+
+    results: list[dict] = []
+    async with httpx.AsyncClient(follow_redirects=True) as client:
+        # openFDA drug enforcement — the structured half of the FDA source.
+        try:
+            since = date_type.today() - timedelta(days=7)
+            response = await client.get(
+                "https://api.fda.gov/drug/enforcement.json",
+                params={
+                    "search": f"report_date:[{since:%Y%m%d}+TO+{date_type.today():%Y%m%d}]",
+                    "limit": 1,
+                },
+                timeout=20.0,
+            )
+            if response.status_code == 404:
+                results.append(
+                    {
+                        "source": "openfda",
+                        "ok": True,
+                        "detail": "Reachable. No enforcement reports in the last 7 days.",
+                    }
+                )
+            elif response.status_code == 200:
+                total = (response.json().get("meta") or {}).get("results", {}).get("total")
+                results.append(
+                    {
+                        "source": "openfda",
+                        "ok": True,
+                        "detail": f"Reachable. {total} enforcement reports in the last 7 days.",
+                    }
+                )
+            else:
+                results.append(
+                    {
+                        "source": "openfda",
+                        "ok": False,
+                        "detail": f"HTTP {response.status_code}: {response.text[:160]}",
+                    }
+                )
+        except (httpx.HTTPError, ValueError) as exc:
+            results.append(
+                {"source": "openfda", "ok": False, "detail": f"{type(exc).__name__}: {exc}"}
+            )
+
+        # ClinicalTrials.gov v2.
+        try:
+            response = await client.get(
+                "https://clinicaltrials.gov/api/v2/studies",
+                params={"pageSize": 1, "format": "json"},
+                headers={"Accept": "application/json"},
+                timeout=20.0,
+            )
+            if response.status_code == 200:
+                count = len(response.json().get("studies") or [])
+                results.append(
+                    {
+                        "source": "clinicaltrials",
+                        "ok": True,
+                        "detail": f"Reachable. Returned {count} study in a probe query.",
+                    }
+                )
+            else:
+                results.append(
+                    {
+                        "source": "clinicaltrials",
+                        "ok": False,
+                        "detail": f"HTTP {response.status_code}: {response.text[:160]}",
+                    }
+                )
+        except (httpx.HTTPError, ValueError) as exc:
+            results.append(
+                {
+                    "source": "clinicaltrials",
+                    "ok": False,
+                    "detail": f"{type(exc).__name__}: {exc}",
+                }
+            )
+
+    return results

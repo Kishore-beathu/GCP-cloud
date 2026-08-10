@@ -89,34 +89,83 @@ def parse_datetime(value: str | None) -> datetime | None:
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
-def parse_feed(xml: str) -> list[FeedEntry]:
-    """Read an RSS, RDF or Atom document into entries, newest first.
+@dataclass
+class ParseReport:
+    """Why a feed produced the entries it did.
 
-    A malformed document yields an empty list rather than raising: one broken
-    feed must not take down an ingest cycle covering five others.
+    A bare entry count cannot distinguish "the channel is empty right now"
+    from "every item was dropped because its date format is unfamiliar", and
+    those need opposite responses — wait, versus fix the parser.
     """
+
+    items_seen: int = 0
+    kept: int = 0
+    root_tag: str | None = None
+    dropped_no_title: int = 0
+    dropped_no_link: int = 0
+    dropped_no_date: int = 0
+    parse_error: str | None = None
+
+    def summary(self) -> str:
+        if self.parse_error:
+            return f"XML did not parse: {self.parse_error}"
+        if not self.items_seen:
+            if self.root_tag and self.root_tag not in ("rss", "feed", "RDF"):
+                # An error page is usually well-formed XML, so "no items" alone
+                # reads as a quiet feed when it is really the wrong document.
+                return (
+                    f"Parsed as XML, but the root element is <{self.root_tag}>, "
+                    "which is not a feed — this looks like an error page."
+                )
+            return "Parsed, but the feed contains no items right now."
+        parts = [f"{self.items_seen} items, {self.kept} usable"]
+        for label, count in (
+            ("no title", self.dropped_no_title),
+            ("no link", self.dropped_no_link),
+            ("unreadable date", self.dropped_no_date),
+        ):
+            if count:
+                parts.append(f"{count} dropped for {label}")
+        return "; ".join(parts)
+
+
+def parse_feed_with_report(xml: str) -> tuple[list[FeedEntry], ParseReport]:
+    """Parse a feed and report what was dropped and why."""
+    report = ParseReport()
     try:
-        root = ElementTree.fromstring(xml)
+        # A leading BOM or stray whitespace before the declaration is common
+        # and some parsers reject it, so it is trimmed rather than trusted.
+        root = ElementTree.fromstring(xml.lstrip("\ufeff \t\r\n"))
     except ElementTree.ParseError as exc:
         logger.warning("Feed is not well-formed XML: %s", exc)
-        return []
+        report.parse_error = str(exc)
+        return [], report
+
+    report.root_tag = _local(root.tag)
 
     entries: list[FeedEntry] = []
     for element in root.iter():
         if _local(element.tag) not in ("item", "entry"):
             continue
+        report.items_seen += 1
 
         title = _text(element, "title")
+        if not title:
+            report.dropped_no_title += 1
+            continue
+
         link = _text(element, "link", "guid", "id")
-        if not title or not link:
+        if not link:
+            report.dropped_no_link += 1
             continue
 
         published = parse_datetime(
-            _text(element, "pubDate", "published", "updated", "date")
+            _text(element, "pubDate", "published", "updated", "date", "created")
         )
         if published is None:
             # An item with no usable timestamp cannot be aligned to a price
             # move, so it is worth less than the noise it adds.
+            report.dropped_no_date += 1
             continue
 
         entries.append(
@@ -130,7 +179,17 @@ def parse_feed(xml: str) -> list[FeedEntry]:
         )
 
     entries.sort(key=lambda entry: entry.published_at, reverse=True)
-    return entries
+    report.kept = len(entries)
+    return entries, report
+
+
+def parse_feed(xml: str) -> list[FeedEntry]:
+    """Read an RSS, RDF or Atom document into entries, newest first.
+
+    A malformed document yields an empty list rather than raising: one broken
+    feed must not take down an ingest cycle covering five others.
+    """
+    return parse_feed_with_report(xml)[0]
 
 
 async def fetch_feed(
