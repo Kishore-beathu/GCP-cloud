@@ -8,7 +8,6 @@ rather than letting a list of signals imply a track record it does not have.
 
 from __future__ import annotations
 
-import asyncio
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
@@ -85,23 +84,28 @@ async def scan(
             detail=f"Unknown setup {setup!r}. Try one of {sorted(setups.SETUPS)}.",
         )
 
-    previous_closes = await _previous_closes(db, symbols)
-
     signals: list[dict] = []
     considered: list[dict] = []
     unavailable: list[str] = []
 
-    for symbol in symbols:
+    # Bars first, because the prior close depends on which session the bars
+    # belong to — see _previous_closes.
+    sessions: dict[str, list] = {}
+    for index, symbol in enumerate(symbols):
         try:
             bars = await fetch_intraday(symbol, WINDOW)
         except YahooUnavailable:
             # One refusal means the rest of the batch will be refused too.
-            unavailable.extend(symbols[symbols.index(symbol) :])
+            unavailable.extend(symbols[index:])
             break
         if not bars:
             unavailable.append(symbol)
             continue
+        sessions[symbol] = bars
 
+    previous_closes = await _previous_closes(db, sessions)
+
+    for symbol, bars in sessions.items():
         evaluations = (
             [setups.SETUPS[setup](symbol, bars, previous_closes.get(symbol))]
             if setup
@@ -154,26 +158,43 @@ async def _resolve(
     return [symbol.upper() for symbol in (tickers or [])]
 
 
-async def _previous_closes(db: AsyncSession, symbols: list[str]) -> dict[str, float]:
-    """Each symbol's most recent stored daily close.
+async def _previous_closes(db: AsyncSession, sessions: dict[str, list]) -> dict[str, float]:
+    """The last stored daily close *before* the session each symbol is in.
 
     "Up on the day" needs yesterday's close, and the intraday feed does not
-    carry it. The daily table does, which is one of the few places these two
+    carry it — the daily table does, which is one of the few places the two
     timeframes meet.
+
+    Strictly before the session date, which is the whole subtlety. Taking the
+    most recent stored close instead returns *today's* once a backfill has run
+    or the daily job has fired, so "up on the day" compares a price against
+    itself and L1 can never trigger. That failure is silent: the scan returns
+    no signals and looks like a quiet market.
     """
+    if not sessions:
+        return {}
+
     rows = (
         await db.execute(
             select(Stock.ticker, StockPrice.close, StockPrice.price_date)
             .join(StockPrice, StockPrice.ticker_id == Stock.id)
-            .where(Stock.ticker.in_(symbols))
+            .where(Stock.ticker.in_(list(sessions)))
             .order_by(Stock.ticker, StockPrice.price_date.desc())
         )
     ).all()
 
+    session_dates = {
+        symbol: bars[-1].at.date() for symbol, bars in sessions.items() if bars
+    }
+
     latest: dict[str, float] = {}
-    for symbol, close, _ in rows:
-        if symbol not in latest and close is not None:
-            latest[symbol] = close
+    for symbol, close, price_date in rows:
+        if symbol in latest or close is None:
+            continue
+        session_date = session_dates.get(symbol)
+        if session_date and price_date.date() >= session_date:
+            continue
+        latest[symbol] = close
     return latest
 
 

@@ -448,3 +448,52 @@ async def test_size_endpoint_matches_the_plans_worked_example(client):
     ).json()
 
     assert body["shares"] == 200
+
+
+@pytest.mark.asyncio
+async def test_the_prior_close_excludes_the_session_being_scanned(
+    client, db, seeded_stocks, monkeypatch
+):
+    """Otherwise "up on the day" compares today against today.
+
+    Once a backfill has run, the most recent stored daily close *is* today's,
+    so taking it made L1 unable to trigger — and the failure was silent: no
+    signals, indistinguishable from a quiet market.
+    """
+    from datetime import datetime as dt
+
+    from app.models import StockPrice
+
+    stock = seeded_stocks[0]
+    session = _dip_and_rip_session()
+    session_day = session[-1].at
+
+    db.add_all(
+        [
+            # Yesterday's close, which is the one the setup wants.
+            StockPrice(
+                ticker_id=stock.id,
+                close=100.0,
+                price_date=session_day - timedelta(days=1),
+                source="test",
+            ),
+            # Today's, already written by the daily job. Using this would make
+            # the comparison meaningless.
+            StockPrice(
+                ticker_id=stock.id,
+                close=session[-1].close,
+                price_date=session_day,
+                source="test",
+            ),
+        ]
+    )
+    await db.commit()
+
+    async def _session(symbol, window):
+        return session
+
+    monkeypatch.setattr("app.routers.setups.fetch_intraday", _session)
+
+    body = (await client.get(f"/setups?ticker={stock.ticker}")).json()
+
+    assert body["signals"], "the prior close was taken from the session being scanned"
