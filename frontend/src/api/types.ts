@@ -122,6 +122,8 @@ export interface StockScore {
   sector_rank: number
   sector_size: number
   coverage: number
+  /** 0-1: share of the price factors that had enough history to compute. */
+  technical_coverage: number
   news_count_30d: number
   factors: ScoreFactor[]
 }

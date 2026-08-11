@@ -85,6 +85,11 @@ class StockScore:
     sentiment_score: float | None
     # 0-1: how much of the sentiment pillar's weight the news volume earned.
     sentiment_confidence: float = 0.0
+    # 0-1: share of the technical factors that could be computed at all. Below
+    # 1 means the symbol lacks the price history one of them needs — the
+    # 52-week range wants 252 sessions — so it was ranked without that factor
+    # and the rest were reweighted to fill the gap.
+    technical_coverage: float = 0.0
     rank: int = 0
     universe_size: int = 0
     sector_rank: int = 0
@@ -103,6 +108,7 @@ class StockScore:
             "technical_score": self.technical_score,
             "sentiment_score": self.sentiment_score,
             "sentiment_confidence": self.sentiment_confidence,
+            "technical_coverage": self.technical_coverage,
             "rank": self.rank,
             "universe_size": self.universe_size,
             "sector_rank": self.sector_rank,
@@ -359,7 +365,7 @@ def _pillar(
     ranks: dict[str, dict[str, float | None]],
     weights: dict[str, tuple[str, float, str]],
     values: dict[str, float | None],
-) -> tuple[float | None, list[Factor]]:
+) -> tuple[float | None, list[Factor], float]:
     """Weighted mean of a pillar's available factors, plus their audit trail.
 
     Weights are renormalised over the factors that are actually present, so a
@@ -390,8 +396,14 @@ def _pillar(
         )
 
     if not total_weight:
-        return None, factors
-    return round(weighted / total_weight, 2), factors
+        return None, factors, 0.0
+    # The third value is the share of the pillar's intended weight that was
+    # actually available. Reported separately per pillar because the two run
+    # short for unrelated reasons: a technical pillar is incomplete when the
+    # symbol lacks price history, a sentiment one when nobody wrote about it.
+    # Collapsing them into one number made "not enough history" and "quiet
+    # week" indistinguishable, and the second is the normal case.
+    return round(weighted / total_weight, 2), factors, round(total_weight, 4)
 
 
 async def score_universe(db: AsyncSession, days: int = 30) -> list[StockScore]:
@@ -421,13 +433,13 @@ async def score_universe(db: AsyncSession, days: int = 30) -> list[StockScore]:
 
     scored: list[StockScore] = []
     for raw in inputs:
-        technical, technical_factors = _pillar(
+        technical, technical_factors, technical_weight = _pillar(
             raw,
             technical_ranks,
             TECHNICAL_WEIGHTS,
             {key: getattr(raw.technicals, key) for key in TECHNICAL_WEIGHTS},
         )
-        sentiment, sentiment_factors = _pillar(
+        sentiment, sentiment_factors, _ = _pillar(
             raw, sentiment_ranks, SENTIMENT_WEIGHTS, raw.sentiment
         )
 
@@ -445,6 +457,7 @@ async def score_universe(db: AsyncSession, days: int = 30) -> list[StockScore]:
                 technical_score=technical,
                 sentiment_score=sentiment,
                 sentiment_confidence=round(sentiment_confidence(raw.news_count), 2),
+                technical_coverage=technical_weight,
                 # What share of the intended inputs this score actually used.
                 coverage=round(weight_total, 2),
                 factors=sorted(

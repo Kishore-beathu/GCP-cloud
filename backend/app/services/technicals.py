@@ -134,8 +134,17 @@ def volatility(closes: list[float], window: int = 21) -> float | None:
 
 
 def range_position(closes: list[float], window: int = 252) -> float | None:
-    """Where the last close sits between the window's low and high, 0-100."""
-    if len(closes) < 2:
+    """Where the last close sits between the window's low and high, 0-100.
+
+    Requires the whole window. Slicing ``closes[-252:]`` off a shorter series
+    silently answers a different question and reports it under the same name:
+    a symbol with three months of history scored near 100 on "position in the
+    52-week range" when the range measured was two months long, and was then
+    ranked against symbols whose figure genuinely spanned a year. Returning
+    None costs the factor and says so through `coverage`, which is the honest
+    trade.
+    """
+    if len(closes) < window:
         return None
     recent = closes[-window:]
     low, high = min(recent), max(recent)
@@ -145,8 +154,13 @@ def range_position(closes: list[float], window: int = 252) -> float | None:
 
 
 def drawdown(closes: list[float], window: int = 252) -> float | None:
-    """Decline from the window's highest close, in percent (zero or negative)."""
-    if len(closes) < 2:
+    """Decline from the window's highest close, in percent (zero or negative).
+
+    Requires the whole window, for the same reason as `range_position`: a
+    drawdown from a two-month peak is not a drawdown from a 52-week peak, and
+    reporting one as the other flatters every recently added symbol.
+    """
+    if len(closes) < window:
         return None
     recent = closes[-window:]
     peak = max(recent)

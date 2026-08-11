@@ -84,22 +84,40 @@ def test_volatility_is_annualised():
 
 
 def test_range_position_reports_where_in_the_band_the_close_sits():
+    # An explicit window, because these check the arithmetic rather than the
+    # history requirement — the default asks for a full 252 sessions.
     rising = list(range(100, 200))
-    assert technicals.range_position([float(x) for x in rising]) == 100.0
+    assert technicals.range_position([float(x) for x in rising], window=100) == 100.0
 
     falling = list(range(200, 100, -1))
-    assert technicals.range_position([float(x) for x in falling]) == 0.0
+    assert technicals.range_position([float(x) for x in falling], window=100) == 0.0
 
 
 def test_range_position_of_a_flat_series_is_the_midpoint():
     """High equals low; the answer is 50, not a division by zero."""
-    assert technicals.range_position([100.0] * 30) == 50.0
+    assert technicals.range_position([100.0] * 30, window=30) == 50.0
+
+
+def test_range_position_needs_the_whole_window_it_claims_to_measure():
+    """Otherwise a two-month range gets reported as a 52-week one.
+
+    Slicing a shorter series answered a different question under the same
+    name, so a recently added symbol that had risen since it was added scored
+    near 100 on "position in the 52-week range" and outranked symbols whose
+    figure genuinely spanned a year.
+    """
+    three_months = [float(100 + day) for day in range(65)]
+
+    assert technicals.range_position(three_months) is None
+    assert technicals.drawdown(three_months) is None
+    # And is computed once the history is actually there.
+    assert technicals.range_position([float(100 + day) for day in range(252)]) == 100.0
 
 
 def test_drawdown_is_zero_at_a_high_and_negative_below_it():
-    assert technicals.drawdown([100.0, 110.0, 120.0]) == 0.0
+    assert technicals.drawdown([100.0, 110.0, 120.0], window=3) == 0.0
 
-    result = technicals.drawdown([100.0, 120.0, 90.0])
+    result = technicals.drawdown([100.0, 120.0, 90.0], window=3)
     assert result == -25.0
 
 

@@ -45,15 +45,21 @@ function Factors({ score }: { score: StockScore }) {
   )
 }
 
-// A score built from every intended input. Below this the weights were
-// renormalised over whatever was available, which is not wrong but is worth
-// knowing before reading a rank off the top of the list.
+// A technical pillar built from every price factor. Below this the symbol
+// lacks the history one of them needs, so it was ranked without that factor
+// and the rest were reweighted to fill the gap.
+//
+// Deliberately *not* overall `coverage`: that also falls when a symbol has
+// little news, which is the normal case for most non-US listings, so a flag
+// on it fired on nearly every row and stopped carrying information.
 const FULL_COVERAGE = 1
 
 function rowTitle(item: StockScore, duplicated: boolean): string {
   const parts = [item.company_name, `rank ${item.rank} of ${item.universe_size}`]
-  if (item.coverage < FULL_COVERAGE) {
-    parts.push(`scored on ${Math.round(item.coverage * 100)}% of the inputs`)
+  if (item.technical_coverage < FULL_COVERAGE) {
+    parts.push(
+      `missing price history: ${Math.round(item.technical_coverage * 100)}% of the price factors`,
+    )
   }
   if (duplicated) parts.push('same company as another row')
   return parts.join(' · ')
@@ -76,7 +82,9 @@ export function ScorePanel({ group, onSelect, selected }: Props) {
     return new Set([...seen].filter(([, count]) => count > 1).map(([name]) => name))
   }, [data])
 
-  const hasPartial = (data?.scores ?? []).some((item) => item.coverage < FULL_COVERAGE)
+  const hasPartial = (data?.scores ?? []).some(
+    (item) => item.technical_coverage < FULL_COVERAGE,
+  )
 
   return (
     <section className="panel">
@@ -116,8 +124,8 @@ export function ScorePanel({ group, onSelect, selected }: Props) {
                     {duplicates.has(item.company_name) && (
                       <span aria-label="Also listed elsewhere in this ranking">⧉</span>
                     )}
-                    {item.coverage < FULL_COVERAGE && (
-                      <span aria-label="Scored on partial inputs">◐</span>
+                    {item.technical_coverage < FULL_COVERAGE && (
+                      <span aria-label="Missing price history">◐</span>
                     )}
                   </span>
                   <Bar value={item.score} />
@@ -135,9 +143,8 @@ export function ScorePanel({ group, onSelect, selected }: Props) {
             <p className="muted score-method">
               {hasPartial && (
                 <>
-                  <strong>◐</strong> scored on part of the inputs — usually too
-                  little price history for the 52-week factors, which flatters a
-                  symbol that has only recently been added.{' '}
+                  <strong>◐</strong> too little price history for the 52-week
+                  factors, so this was ranked without them.{' '}
                 </>
               )}
               {duplicates.size > 0 && (

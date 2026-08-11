@@ -465,3 +465,44 @@ async def test_validation_endpoint_is_reachable(client, seeded_stocks):
     body = (await client.get("/scores/validation")).json()
 
     assert body["status"] in {"ok", "insufficient_history", "no_dispersion", "no_stocks"}
+
+
+@pytest.mark.asyncio
+async def test_technical_coverage_is_separate_from_news_coverage(db, seeded_stocks):
+    """Two pillars run short for unrelated reasons; one number hid that.
+
+    A quiet week and a symbol with no price history both showed as partial
+    `coverage`, so a flag built on it fired on nearly every row — and the
+    common cause was the harmless one.
+    """
+    short, long = seeded_stocks
+    # Enough sessions to be scored, too few for the 52-week range factor.
+    await add_prices(db, short, [100.0 * 1.002**day for day in range(40)])
+    await add_prices(db, long, [100.0 * 1.002**day for day in range(300)])
+    await add_news(db, short, [0.5] * 10)
+    await add_news(db, long, [0.5] * 10)
+
+    scored = {item.ticker: item for item in await scoring.score_universe(db)}
+
+    # Both have ample news, so neither is short on the sentiment side.
+    assert scored[short.ticker].sentiment_confidence == 1.0
+    assert scored[long.ticker].sentiment_confidence == 1.0
+    # Only the short-history symbol is missing a price factor.
+    assert scored[short.ticker].technical_coverage < 1.0
+    assert scored[long.ticker].technical_coverage == 1.0
+    assert not any(f.key == "range_position_52w" for f in scored[short.ticker].factors)
+
+
+@pytest.mark.asyncio
+async def test_a_quiet_symbol_is_not_reported_as_missing_price_history(db, seeded_stocks):
+    """The distinction that makes the flag worth showing at all."""
+    stock = seeded_stocks[0]
+    await add_prices(db, stock, [100.0 * 1.002**day for day in range(300)])
+    await add_news(db, stock, [0.5])  # one article: thin news, full history
+
+    item = next(
+        entry for entry in await scoring.score_universe(db) if entry.ticker == stock.ticker
+    )
+
+    assert item.technical_coverage == 1.0
+    assert item.sentiment_confidence == 0.2
