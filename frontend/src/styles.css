@@ -599,7 +599,7 @@ code {
 
 .score-list .row {
   display: grid;
-  grid-template-columns: 26px minmax(52px, max-content) minmax(0, 1fr) 32px;
+  grid-template-columns: 26px minmax(52px, max-content) max-content minmax(0, 1fr) 32px;
   gap: 8px;
   align-items: center;
   width: 100%;
@@ -666,4 +666,14 @@ code {
 .score-method {
   font-size: 11px;
   margin: 10px 0 0;
+}
+
+/* Flag cell in the ranked list. Always present so the grid stays aligned;
+   empty on the rows that have nothing to say. */
+.score-list .flags {
+  display: inline-flex;
+  gap: 3px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1;
 }
