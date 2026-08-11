@@ -457,24 +457,166 @@ def _median(values: list[float]) -> float | None:
     return (ordered[middle - 1] + ordered[middle]) / 2
 
 
+def _spread(ranked: list[tuple[str, float]], forward: dict[str, float]) -> dict | None:
+    """Quintile the ranking and report top-minus-bottom forward return."""
+    if len(ranked) < 10:
+        return None
+    if ranked[0][1] == ranked[-1][1]:
+        # Every symbol scored the same: the order is arbitrary and any spread
+        # would be an artefact of the sort, not a finding.
+        return None
+
+    ordered = sorted(ranked, key=lambda row: row[1], reverse=True)
+    size = max(1, len(ordered) // 5)
+    top = [forward[symbol] for symbol, _ in ordered[:size] if symbol in forward]
+    bottom = [forward[symbol] for symbol, _ in ordered[-size:] if symbol in forward]
+    if not top or not bottom:
+        return None
+
+    top_mean = sum(top) / len(top)
+    bottom_mean = sum(bottom) / len(bottom)
+    return {
+        "top_mean": round(top_mean, 4),
+        "bottom_mean": round(bottom_mean, 4),
+        "spread": round(top_mean - bottom_mean, 4),
+        "symbols": len(ordered),
+    }
+
+
+def _rank_at(
+    as_of: datetime,
+    history: dict[str, list[tuple[datetime, float]]],
+    news: dict[str, list[tuple[datetime, float, str]]],
+    news_days: int,
+) -> dict[str, list[tuple[str, float]]]:
+    """Rank the universe as it stood at ``as_of``, three ways.
+
+    Returns one ranking per strategy so the pillars can be judged separately.
+    A blended score that works only because one half carries it is worth
+    knowing about — and so is a half that actively subtracts.
+    """
+    tech_inputs: dict[str, Technicals] = {}
+    sent_inputs: dict[str, dict[str, float | None]] = {}
+
+    for symbol, series in history.items():
+        past = [row for row in series if row[0] <= as_of]
+        if len(past) < MIN_SESSIONS:
+            continue
+        tech_inputs[symbol] = technicals.compute(past)
+
+        window_start = as_of - timedelta(days=news_days)
+        rows = [
+            row for row in news.get(symbol, []) if window_start <= row[0] <= as_of
+        ]
+        sent_inputs[symbol] = _summarise_news_at(rows, as_of)
+
+    if not tech_inputs:
+        return {"technical": [], "sentiment": [], "blended": []}
+
+    tech_ranks = {
+        key: percentile_ranks({s: getattr(t, key) for s, t in tech_inputs.items()})
+        for key in TECHNICAL_WEIGHTS
+    }
+    sent_ranks = {
+        key: percentile_ranks({s: v.get(key) for s, v in sent_inputs.items()})
+        for key in SENTIMENT_WEIGHTS
+    }
+
+    rankings: dict[str, list[tuple[str, float]]] = {
+        "technical": [],
+        "sentiment": [],
+        "blended": [],
+    }
+
+    for symbol in tech_inputs:
+        technical = _weighted(symbol, tech_ranks, TECHNICAL_WEIGHTS)
+        sentiment = _weighted(symbol, sent_ranks, SENTIMENT_WEIGHTS)
+
+        if technical is not None:
+            rankings["technical"].append((symbol, technical))
+        if sentiment is not None:
+            rankings["sentiment"].append((symbol, sentiment))
+
+        present = {
+            name: value
+            for name, value in (("technical", technical), ("sentiment", sentiment))
+            if value is not None
+        }
+        if present:
+            total = sum(PILLAR_WEIGHTS[name] for name in present)
+            blended = sum(PILLAR_WEIGHTS[n] * v for n, v in present.items()) / total
+            rankings["blended"].append((symbol, blended))
+
+    return rankings
+
+
+def _weighted(
+    symbol: str,
+    ranks: dict[str, dict[str, float | None]],
+    weights: dict[str, tuple[str, float, str]],
+) -> float | None:
+    """Weighted mean of the factors available for one symbol."""
+    total = 0.0
+    weighted = 0.0
+    for key, (_, weight, _) in weights.items():
+        percentile = ranks[key].get(symbol)
+        if percentile is None:
+            continue
+        effective = 100 - percentile if key in _INVERTED else percentile
+        total += weight
+        weighted += effective * weight
+    return weighted / total if total else None
+
+
+def _summarise_news_at(
+    rows: list[tuple[datetime, float, str]], as_of: datetime
+) -> dict[str, float | None]:
+    """The sentiment factors, computed as they would have looked at ``as_of``."""
+    if not rows:
+        return {key: None for key in SENTIMENT_WEIGHTS}
+
+    recent_cutoff = as_of - timedelta(days=7)
+    scores = [score for _, score, _ in rows]
+    recent = [score for published, score, _ in rows if published >= recent_cutoff]
+    older = [score for published, score, _ in rows if published < recent_cutoff]
+
+    trend = None
+    if recent and older:
+        trend = sum(recent) / len(recent) - sum(older) / len(older)
+
+    positives = sum(1 for _, _, sentiment in rows if sentiment == "positive")
+    return {
+        "sentiment_mean_30d": sum(scores) / len(scores),
+        "sentiment_trend": trend,
+        "news_volume_30d": _log_volume(len(rows)),
+        "positive_share_30d": positives / len(rows) * 100,
+    }
+
+
 async def validate(
-    db: AsyncSession, as_of_days_ago: int = 30, horizon_days: int = 21
+    db: AsyncSession,
+    as_of_days_ago: int = 30,
+    horizon_days: int = 21,
+    periods: int = 6,
+    step_days: int = 21,
 ) -> dict:
-    """Did a high score, some days ago, precede a better return since?
+    """Did a high score precede a better return — repeatedly, and which pillar?
 
-    Scores the universe as it stood ``as_of_days_ago`` days back using only
-    price history available *then*, then measures what each symbol did over the
-    following ``horizon_days``. Splitting into quintiles answers the only
-    question that matters about a ranking: does the top of it outperform the
-    bottom?
+    Two things a single-period test cannot do, and both matter:
 
-    This is a single-period test, not a rolling backtest over many start dates,
-    so it is evidence rather than proof — one favourable month can flatter any
-    ranking. It is reported with the sample size so the reader can weigh it.
+    * **Several start dates.** One month can flatter or damn any ranking. A
+      momentum score in a reversal month looks catastrophic and tells you
+      nothing about the score. Reporting the spread per period, and how many
+      periods were positive, separates "this does not work" from "that month
+      went against it".
+    * **Each pillar separately.** A blended score that works only because one
+      half carries it is worth knowing about, and a half that actively
+      subtracts is worth knowing about urgently. Technical-only,
+      sentiment-only and blended are ranked and measured independently.
+
+    Every ranking uses only data timestamped at or before its ``as_of``.
     """
     now = datetime.now(timezone.utc)
-    as_of = now - timedelta(days=as_of_days_ago)
-    horizon_end = as_of + timedelta(days=horizon_days)
 
     stocks = list(
         (
@@ -483,121 +625,107 @@ async def validate(
             )
         ).scalars()
     )
-    by_id = {stock.id: stock for stock in stocks}
+    by_id = {stock.id: stock.ticker for stock in stocks}
     if not by_id:
-        return {"status": "no_stocks", "buckets": []}
+        return {"status": "no_stocks", "periods": []}
 
-    rows = (
+    price_rows = (
         await db.execute(
             select(StockPrice.ticker_id, StockPrice.price_date, StockPrice.close).where(
                 StockPrice.ticker_id.in_(by_id)
             )
         )
     ).all()
-
-    history: dict[int, list[tuple[datetime, float]]] = {}
-    for ticker_id, price_date, close in rows:
+    history: dict[str, list[tuple[datetime, float]]] = {}
+    for ticker_id, price_date, close in price_rows:
         if close is None:
             continue
         moment = price_date if price_date.tzinfo else price_date.replace(tzinfo=timezone.utc)
-        history.setdefault(ticker_id, []).append((moment, close))
-
-    ranked: list[tuple[str, float]] = []
-    forward: dict[str, float] = {}
-
-    for ticker_id, series in history.items():
+        history.setdefault(by_id[ticker_id], []).append((moment, close))
+    for series in history.values():
         series.sort(key=lambda row: row[0])
-        # Only what was knowable at the time: using later prices to build the
-        # score being tested is the classic way to backtest a fantasy.
-        past = [row for row in series if row[0] <= as_of]
-        after = [row for row in series if as_of < row[0] <= horizon_end]
-        if len(past) < MIN_SESSIONS or not after:
+
+    news_rows = (
+        await db.execute(
+            select(NewsArticle.ticker_id, NewsArticle.published_at, SentimentScore.score,
+                   SentimentScore.sentiment)
+            .join(SentimentScore, SentimentScore.article_id == NewsArticle.id)
+            .where(
+                NewsArticle.ticker_id.in_(by_id),
+                NewsArticle.duplicate_of_id.is_(None),
+            )
+        )
+    ).all()
+    news: dict[str, list[tuple[datetime, float, str]]] = {}
+    for ticker_id, published_at, score, sentiment in news_rows:
+        moment = (
+            published_at if published_at.tzinfo else published_at.replace(tzinfo=timezone.utc)
+        )
+        news.setdefault(by_id[ticker_id], []).append((moment, score or 0.0, sentiment))
+
+    results: list[dict] = []
+    for index in range(periods):
+        as_of = now - timedelta(days=as_of_days_ago + index * step_days)
+        horizon_end = as_of + timedelta(days=horizon_days)
+
+        forward: dict[str, float] = {}
+        for symbol, series in history.items():
+            past = [row for row in series if row[0] <= as_of]
+            after = [row for row in series if as_of < row[0] <= horizon_end]
+            if not past or not after or not past[-1][1]:
+                continue
+            forward[symbol] = round((after[-1][1] - past[-1][1]) / past[-1][1] * 100, 4)
+
+        if len(forward) < 10:
             continue
 
-        indicators = technicals.compute(past)
-        if indicators.momentum_21d is None:
-            continue
+        rankings = _rank_at(as_of, history, news, news_days=30)
+        period = {"as_of": as_of.date().isoformat(), "symbols": len(forward)}
+        for strategy, ranked in rankings.items():
+            period[strategy] = _spread(ranked, forward)
+        if any(period.get(name) for name in rankings):
+            results.append(period)
 
-        start_price = past[-1][1]
-        end_price = after[-1][1]
-        if not start_price:
-            continue
-
-        symbol = by_id[ticker_id].ticker
-        ranked.append((symbol, indicators.momentum_21d))
-        forward[symbol] = round((end_price - start_price) / start_price * 100, 4)
-
-    if len(ranked) < 10:
+    if not results:
         return {
             "status": "insufficient_history",
             "detail": (
-                f"Only {len(ranked)} symbols had {MIN_SESSIONS}+ sessions before "
-                f"{as_of.date()} and a price after it. Load more history with "
+                "Not enough price history to score a past date and measure what "
+                "followed. Load more with "
                 "POST /admin/ingest/yahoo?range=2y&only_missing=false."
             ),
-            "buckets": [],
+            "periods": [],
         }
 
-    ranked.sort(key=lambda row: row[1], reverse=True)
-
-    # When every symbol scores the same, the order is arbitrary and the buckets
-    # are whatever the sort happened to produce — which can report a large,
-    # entirely spurious spread. Say there was nothing to separate instead.
-    if ranked[0][1] == ranked[-1][1]:
-        return {
-            "status": "no_dispersion",
-            "as_of": as_of.date().isoformat(),
-            "symbols_tested": len(ranked),
-            "detail": (
-                "Every symbol scored identically at the cut-off, so the ranking "
-                "had nothing to separate and any spread would be an artefact of "
-                "sort order. This usually means the price history is flat or "
-                "synthetic."
-            ),
-            "buckets": [],
-        }
-
-    size = max(1, len(ranked) // 5)
-    buckets: list[BucketResult] = []
-    labels = ["Top 20%", "2nd", "3rd", "4th", "Bottom 20%"]
-
-    for index, label in enumerate(labels):
-        start = index * size
-        end = len(ranked) if index == len(labels) - 1 else (index + 1) * size
-        slice_symbols = [symbol for symbol, _ in ranked[start:end]]
-        returns = [forward[symbol] for symbol in slice_symbols if symbol in forward]
-        if not returns:
+    summary: dict[str, dict] = {}
+    for strategy in ("technical", "sentiment", "blended"):
+        spreads = [
+            period[strategy]["spread"]
+            for period in results
+            if period.get(strategy) is not None
+        ]
+        if not spreads:
             continue
-        buckets.append(
-            BucketResult(
-                label=label,
-                symbols=len(returns),
-                mean_forward_return=round(sum(returns) / len(returns), 4),
-                median_forward_return=round(_median(returns) or 0.0, 4),
-                win_rate=round(
-                    sum(1 for value in returns if value > 0) / len(returns) * 100, 2
-                ),
-            )
-        )
-
-    spread = None
-    if len(buckets) >= 2 and buckets[0].mean_forward_return is not None:
-        bottom = buckets[-1].mean_forward_return
-        if bottom is not None:
-            spread = round(buckets[0].mean_forward_return - bottom, 4)
+        summary[strategy] = {
+            "periods": len(spreads),
+            "mean_spread": round(sum(spreads) / len(spreads), 4),
+            "median_spread": round(_median(spreads) or 0.0, 4),
+            # The honest headline: how often did the top half of the ranking
+            # actually beat the bottom? Five of six is a signal; three of six
+            # is a coin toss with extra steps.
+            "periods_positive": sum(1 for value in spreads if value > 0),
+        }
 
     return {
         "status": "ok",
-        "as_of": as_of.date().isoformat(),
         "horizon_days": horizon_days,
-        "symbols_tested": len(ranked),
-        # The number that matters: top quintile minus bottom quintile. Near
-        # zero or negative means the ranking did not separate anything on this
-        # sample, which is a legitimate and useful answer.
-        "top_minus_bottom": spread,
+        "periods_tested": len(results),
+        "step_days": step_days,
+        "summary": summary,
+        "periods": results,
         "caveat": (
-            "One start date, one horizon, no transaction costs, survivorship not "
-            "controlled. Evidence, not proof."
+            "Overlapping windows on one universe, no transaction costs, no "
+            "survivorship control, and the periods are not independent. "
+            "Evidence, not proof."
         ),
-        "buckets": [bucket.as_dict() for bucket in buckets],
     }

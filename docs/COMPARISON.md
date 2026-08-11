@@ -114,7 +114,7 @@ description of the *category* rather than a current fact sheet.
 | Pillars | Fundamental, technical, sentiment | Technical, sentiment. **No fundamentals** |
 | Features | ~900 per stock per day, machine-learned weights | 9 named factors, hand-set weights, arithmetic shown in full |
 | Explainability | Top features driving the score | Every factor, its raw value, percentile, weight and contribution |
-| Track record | Published, multi-year, third-party visible | `GET /scores/validation` measured on *your* data, one period, reported with its caveats |
+| Track record | Published, multi-year, third-party visible | `GET /scores/validation` measured on *your* data: several start dates, each pillar separately, reported with its caveats |
 | Universe | ~1,000 US + ~600 European | 163, whatever you seed |
 | Coverage honesty | — | `coverage` field states what share of intended inputs each score used |
 | Cost | Subscription | Infrastructure + data fees |
@@ -132,6 +132,15 @@ complete response letter and a CHMP opinion are. And it makes no forecast it
 cannot support: a 1–10 score presented as a probability is a calibration claim,
 and calibration is the hardest thing in this field to get right and the easiest
 to assert.
+
+**What the validation actually said on first use.** Over one 21-day window
+from 2026-07-11 the top quintile returned −6.4% against the bottom quintile's
+−2.6%: the ranking was *inverted*, and every quintile was negative. That is
+one falling month, and a trend-following score is exactly what suffers in a
+reversal — but a single period cannot distinguish "the score is wrong" from
+"that month went against it", which is why the endpoint now tests several
+start dates and reports each pillar separately. Take the number the endpoint
+gives you over anything claimed here.
 
 **The honest summary.** If you want a researched, validated score across a
 large universe, buy one. What this gives you is a score you can take apart,

@@ -62,14 +62,21 @@ async def list_scores(
 async def score_validation(
     as_of_days_ago: int = Query(default=30, ge=7, le=365),
     horizon_days: int = Query(default=21, ge=1, le=180),
+    periods: int = Query(
+        default=6, ge=1, le=24, description="How many start dates to test"
+    ),
+    step_days: int = Query(default=21, ge=1, le=90, description="Gap between start dates"),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """Measure the ranking against what happened next, on your own data.
 
-    Reports the result whatever it is, including "not enough history". A score
-    nobody has tested is decoration.
+    Reports each pillar separately over several start dates, because a single
+    period cannot distinguish a ranking that does not work from a month that
+    went against it — and because a blend that works only through one of its
+    halves is worth knowing about. Reports the result whatever it says,
+    including "not enough history".
     """
-    return await scoring.validate(db, as_of_days_ago, horizon_days)
+    return await scoring.validate(db, as_of_days_ago, horizon_days, periods, step_days)
 
 
 @router.get("/{ticker}", summary="One symbol's score, with every factor")

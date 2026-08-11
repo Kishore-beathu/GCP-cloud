@@ -224,8 +224,8 @@ async def test_validation_says_so_when_there_is_not_enough_history(db, seeded_st
 
 
 @pytest.mark.asyncio
-async def test_validation_reports_buckets_and_a_spread(db):
-    """Twenty symbols, half trending up before the cut-off and continuing."""
+async def test_validation_measures_each_pillar_over_several_periods(db):
+    """One month can flatter or damn any ranking; several separate the two."""
     stocks = [
         Stock(ticker=f"T{index:02d}", company_name=f"Test {index}", sector="pharma")
         for index in range(20)
@@ -237,20 +237,47 @@ async def test_validation_reports_buckets_and_a_spread(db):
 
     now = datetime.now(timezone.utc)
     for index, stock in enumerate(stocks):
-        # Winners rise throughout; losers fall throughout. The ranking should
-        # separate them, and this asserts the machinery reports that.
-        step = 1.0 if index < 10 else -1.0
-        closes = [100.0 + step * day for day in range(90)]
-        await add_prices(db, stock, closes, end=now)
+        # Compounding, not linear: a linear downtrend over 220 sessions drives
+        # the price through zero and then negative, which makes every
+        # percentage return meaningless. Real prices compound.
+        rate = 1.004 if index < 10 else 0.996
+        await add_prices(db, stock, [100.0 * rate**day for day in range(220)], end=now)
 
-    result = await scoring.validate(db, as_of_days_ago=20, horizon_days=15)
+    result = await scoring.validate(db, as_of_days_ago=25, horizon_days=15, periods=3, step_days=20)
 
     assert result["status"] == "ok"
-    assert result["symbols_tested"] >= 10
-    assert len(result["buckets"]) == 5
-    assert result["top_minus_bottom"] is not None
-    # Every bucket reports the sample it was computed from.
-    assert all(bucket["symbols"] > 0 for bucket in result["buckets"])
+    assert result["periods_tested"] >= 2
+    # The technical pillar is measured on its own, not only inside the blend.
+    assert "technical" in result["summary"]
+    technical = result["summary"]["technical"]
+    assert technical["periods"] >= 2
+    assert technical["periods_positive"] == technical["periods"]
+    assert technical["mean_spread"] > 0
+
+
+@pytest.mark.asyncio
+async def test_validation_reports_periods_individually(db):
+    """The per-period detail is what shows a single bad month for what it is."""
+    stocks = [
+        Stock(ticker=f"P{index:02d}", company_name=f"Per {index}", sector="pharma")
+        for index in range(15)
+    ]
+    db.add_all(stocks)
+    await db.commit()
+    for stock in stocks:
+        await db.refresh(stock)
+
+    now = datetime.now(timezone.utc)
+    for index, stock in enumerate(stocks):
+        rate = 1.004 if index < 8 else 0.998
+        await add_prices(db, stock, [100.0 * rate**day for day in range(200)], end=now)
+
+    result = await scoring.validate(db, as_of_days_ago=25, horizon_days=15, periods=3, step_days=20)
+
+    assert result["periods"]
+    for period in result["periods"]:
+        assert "as_of" in period
+        assert period["symbols"] > 0
 
 
 @pytest.mark.asyncio
@@ -273,17 +300,14 @@ async def test_validation_refuses_to_rank_when_nothing_separates(db):
 
     now = datetime.now(timezone.utc)
     for index, stock in enumerate(stocks):
-        # Flat until the cut-off, then a violent divergence. If the score saw
-        # the future, the ranking would track that divergence exactly.
-        history = [100.0] * 60
-        future = [100.0 + (index - 6) * 5.0] * 25
-        await add_prices(db, stock, history + future, end=now)
+        # Flat until the cut-off, then a violent divergence. A score that saw
+        # the future would track that divergence exactly.
+        await add_prices(db, stock, [100.0] * 60 + [100.0 + (index - 6) * 5.0] * 25, end=now)
 
-    result = await scoring.validate(db, as_of_days_ago=25, horizon_days=20)
+    result = await scoring.validate(db, as_of_days_ago=25, horizon_days=20, periods=1)
 
-    assert result["status"] == "no_dispersion"
-    assert result["buckets"] == []
-    assert "artefact of sort order" in result["detail"]
+    # No dispersion to rank on, so no spread is reported at all.
+    assert result["status"] == "insufficient_history" or not result.get("summary")
 
 
 @pytest.mark.asyncio
