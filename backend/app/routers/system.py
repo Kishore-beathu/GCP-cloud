@@ -337,6 +337,25 @@ async def diagnose_news(db: AsyncSession = Depends(get_db)) -> dict:
 
 
 @router.get(
+    "/admin/diagnose/sentiment",
+    summary="Is the sentiment pillar carrying information, or near-constant?",
+    dependencies=[Depends(require_auth)],
+)
+async def diagnose_sentiment(
+    days: int = Query(default=30, ge=1, le=365),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Distinguish "news does not predict" from "news is not being measured".
+
+    Both produce a sentiment pillar that separates nothing in validation, and
+    only one of them is a reason to change the weights.
+    """
+    from app.services.diagnostics import probe_sentiment_distribution
+
+    return await probe_sentiment_distribution(db, days)
+
+
+@router.get(
     "/admin/sentiment/status",
     summary="How many stored scores are stale",
     dependencies=[Depends(require_auth)],

@@ -482,3 +482,110 @@ async def _probe_json_sources(settings: Settings) -> list[dict]:
             )
 
     return results
+
+
+async def probe_sentiment_distribution(db, days: int = 30) -> dict:
+    """Is the sentiment pillar carrying information, or is it near-constant?
+
+    Validation showed the sentiment pillar failing to separate anything, and a
+    ranking factor can fail that test two very different ways. Either the tone
+    it measures genuinely does not predict returns, or it is barely varying
+    across the universe — in which case its percentiles are mostly ties and
+    sort order, and the pillar is noise wearing a number's clothes.
+
+    Those are indistinguishable from the score output but obvious from the
+    distribution, so this reports it: how many articles are scored at all, how
+    concentrated the scores are, and — the number that decides it — how much
+    the per-symbol 30-day mean actually varies between symbols.
+    """
+    from datetime import datetime, timezone
+
+    from sqlalchemy import func, select
+
+    from app.models import NewsArticle, SentimentScore, Stock
+
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+
+    rows = (
+        await db.execute(
+            select(Stock.ticker, SentimentScore.score, SentimentScore.sentiment)
+            .select_from(NewsArticle)
+            .join(Stock, Stock.id == NewsArticle.ticker_id)
+            .outerjoin(SentimentScore, SentimentScore.article_id == NewsArticle.id)
+            .where(
+                NewsArticle.published_at >= cutoff,
+                NewsArticle.duplicate_of_id.is_(None),
+            )
+        )
+    ).all()
+
+    if not rows:
+        return {
+            "window_days": days,
+            "articles": 0,
+            "detail": "No non-duplicate articles in the window.",
+        }
+
+    # An article with no SentimentScore row is not a neutral article — it is an
+    # unscored one, and counting it as neutral would hide a scoring backlog.
+    unscored = sum(1 for _, score, _ in rows if score is None)
+    scored = [(ticker, score, label) for ticker, score, label in rows if score is not None]
+
+    by_label: dict[str, int] = {}
+    for _, _, label in scored:
+        by_label[label or "unlabelled"] = by_label.get(label or "unlabelled", 0) + 1
+
+    values = [score for _, score, _ in scored]
+    exactly_zero = sum(1 for value in values if value == 0.0)
+
+    per_symbol: dict[str, list[float]] = {}
+    for ticker, score, _ in scored:
+        per_symbol.setdefault(ticker, []).append(score)
+    means = [sum(scores) / len(scores) for scores in per_symbol.values()]
+
+    total_articles = await db.scalar(
+        select(func.count()).select_from(NewsArticle).where(NewsArticle.published_at >= cutoff)
+    )
+
+    return {
+        "window_days": days,
+        "articles": len(rows),
+        "articles_including_duplicates": total_articles,
+        "unscored": unscored,
+        "scored": len(scored),
+        "by_label": by_label,
+        "scores": {
+            "exactly_zero": exactly_zero,
+            "share_exactly_zero": round(exactly_zero / len(values), 4) if values else None,
+            # Few distinct values means most symbols tie on this factor, and
+            # tied percentiles cannot rank anything.
+            "distinct_values": len(set(values)),
+            "min": round(min(values), 4),
+            "max": round(max(values), 4),
+            "mean": round(sum(values) / len(values), 4),
+        },
+        "per_symbol_mean": {
+            "symbols_with_news": len(per_symbol),
+            "stdev": _stdev_or_none(means),
+            "min": round(min(means), 4) if means else None,
+            "max": round(max(means), 4) if means else None,
+            # This is the one that matters for scoring: a spread near zero
+            # means the pillar cannot separate symbols however it is weighted.
+            "spread": round(max(means) - min(means), 4) if means else None,
+        },
+        "reading": (
+            "If share_exactly_zero is high or per_symbol_mean.spread is near "
+            "zero, the sentiment pillar is not measuring anything the ranking "
+            "can use, and re-weighting it will not help. Fix the scorer or the "
+            "matching first. POST /admin/sentiment/rescore re-applies the "
+            "current lexicon to stored articles."
+        ),
+    }
+
+
+def _stdev_or_none(values: list[float]) -> float | None:
+    if len(values) < 2:
+        return None
+    mean = sum(values) / len(values)
+    variance = sum((value - mean) ** 2 for value in values) / (len(values) - 1)
+    return round(variance**0.5, 4)
