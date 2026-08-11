@@ -150,11 +150,22 @@ async def repair_article_links(
     headline goes nowhere. The parser no longer stores them; this clears the
     ones already written.
 
-    Deleting rather than patching: the correct URL is not recoverable from an
-    opaque id, and the next ingest of that feed will re-add the story with a
-    working link. Sentiment scores follow via ``ON DELETE CASCADE``, and other
-    articles pointing at a deleted one as their duplicate primary have the
-    pointer set to NULL rather than being orphaned.
+    Deleting is a last resort, not the recommended fix. The URL cannot be
+    recovered from an opaque id, but the article's *sentiment* is unaffected
+    and the scoring pillar reads it — and on a real database this was a fifth
+    of the corpus. Yahoo's feed only serves recent items, so deleting the
+    older ones loses history that no later ingest will bring back, thinning
+    exactly the early validation periods that are already the sparsest. The
+    dashboard renders an unusable link as plain text instead, which fixes the
+    broken click without destroying the row behind it.
+
+    What remains useful here is the count: it says how much of the stored news
+    predates the parser fix. Apply the deletion only to clear a corpus small
+    enough not to matter, or after re-ingesting.
+
+    When it does delete, sentiment scores follow via ``ON DELETE CASCADE``, and
+    other articles pointing at a deleted one as their duplicate primary have
+    the pointer set to NULL rather than being orphaned.
 
     Defaults to a dry run, because "delete some of the news" should be a
     decision rather than a side effect of asking a question.

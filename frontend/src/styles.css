@@ -269,6 +269,14 @@ main {
   color: var(--accent);
 }
 
+/* A headline whose source supplied no usable link. Same weight as a linked
+   one — the story is equally real — but without the hover affordance, so it
+   does not invite a click that cannot go anywhere. */
+.headline-unlinked {
+  color: var(--text);
+  cursor: default;
+}
+
 /* --- Alerts ---------------------------------------------------------------*/
 
 .alert-form {

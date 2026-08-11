@@ -367,11 +367,13 @@ async def repair_links(
     ),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    """Clear rows the old feed parser wrote with a guid in place of a link.
+    """Count rows the old feed parser wrote with a guid in place of a link.
 
-    Dry run by default. The correct URL cannot be recovered from an opaque
-    vendor id, so the fix is to delete and let the next ingest re-add the
-    story with a working link.
+    Dry run by default, and the dry run is usually the point: the dashboard
+    already renders an unusable link as plain text, so the count measures how
+    much stored news predates the parser fix rather than naming work to do.
+    Deleting throws away sentiment the scoring pillar reads, for stories the
+    feed will not serve again.
     """
     report = await repair_article_links(db, apply=apply)
     return report.as_dict()

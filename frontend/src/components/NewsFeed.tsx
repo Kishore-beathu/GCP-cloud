@@ -5,6 +5,22 @@ import type { EventType, Sentiment } from '../api/types'
 import { useAsync } from '../hooks/useAsync'
 import { EventBadge, SentimentBadge, formatTime } from './badges'
 
+/**
+ * Whether a stored URL can actually be opened.
+ *
+ * A feed parser bug stored non-permalink `<guid>` values — opaque vendor UUIDs
+ * — in place of article links, for about a fifth of the corpus. Rendered as an
+ * href those resolve against this app's own origin, so clicking a headline
+ * quietly went nowhere. The parser no longer stores them, but the existing rows
+ * still carry sentiment that the scoring pillar reads, and Yahoo's feed only
+ * serves recent items, so deleting them to fix a hyperlink would throw away
+ * history that cannot be re-fetched. The headline renders as plain text
+ * instead.
+ */
+function isOpenable(url: string | null | undefined): boolean {
+  return !!url && /^https?:\/\//i.test(url)
+}
+
 const EVENT_OPTIONS: EventType[] = [
   'fda_approval',
   'clinical_trial',
@@ -115,9 +131,18 @@ export function NewsFeed({ ticker }: Props) {
                 {article.source} · {formatTime(article.published_at)}
               </span>
             </div>
-            <a href={article.url} target="_blank" rel="noreferrer">
-              {article.headline}
-            </a>
+            {isOpenable(article.url) ? (
+              <a href={article.url} target="_blank" rel="noreferrer">
+                {article.headline}
+              </a>
+            ) : (
+              <span
+                className="headline-unlinked"
+                title="This source did not supply a usable link for this story"
+              >
+                {article.headline}
+              </span>
+            )}
           </li>
         ))}
       </ul>
