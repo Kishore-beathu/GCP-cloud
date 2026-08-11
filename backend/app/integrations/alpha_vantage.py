@@ -215,12 +215,24 @@ async def update_quotes(db: AsyncSession, tickers: list[str] | None = None) -> d
                     client, stock.ticker, settings.alpha_vantage_api_key
                 )
             except AlphaVantageThrottled as exc:
-                logger.warning("Alpha Vantage throttled at %s: %s", stock.ticker, exc)
+                # Alpha Vantage quotes the key back inside its throttle notice,
+                # so this message must be scrubbed at the source as well as by
+                # the log formatter — the exception text also travels into API
+                # responses, which the formatter never sees.
+                logger.warning(
+                    "Alpha Vantage throttled at %s: %s",
+                    stock.ticker,
+                    redact(str(exc), secrets_from(settings)),
+                )
                 break
             except AlphaVantageRejected as exc:
                 # A rejection is about the account or the symbol, not timing.
                 # Stop rather than spend the remaining quota repeating it.
-                logger.error("Alpha Vantage rejected the call at %s: %s", stock.ticker, exc)
+                logger.error(
+                    "Alpha Vantage rejected the call at %s: %s",
+                    stock.ticker,
+                    redact(str(exc), secrets_from(settings)),
+                )
                 break
 
             if quote is None:
