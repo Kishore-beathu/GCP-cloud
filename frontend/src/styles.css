@@ -526,8 +526,26 @@ code {
 .booting {
   display: grid;
   place-items: center;
+  align-content: center;
+  gap: 12px;
   height: 100%;
+  padding: 24px;
+  text-align: center;
   color: var(--text-dim);
+}
+
+/* The unreachable screen carries a command to run, which must not wrap
+   mid-path on a narrow window. */
+.booting code {
+  display: inline-block;
+  margin-top: 4px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: var(--panel);
+  font-size: 12px;
+  white-space: nowrap;
+  overflow-x: auto;
+  max-width: 100%;
 }
 
 .signin {

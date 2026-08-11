@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 
 import {
+  API_URL,
+  Unreachable,
   getNews,
   getSectorGroups,
   getSession,
@@ -27,18 +29,39 @@ const LIVE_TICKER_LIMIT = 30
 export default function App() {
   // Gate the dashboard behind sign-in only when the deployment requires it;
   // a local backend with no password configured goes straight through.
-  const [gate, setGate] = useState<'checking' | 'open' | 'locked' | 'expired'>('checking')
+  const [gate, setGate] = useState<
+    'checking' | 'open' | 'locked' | 'expired' | 'unreachable'
+  >('checking')
 
   const checkSession = useCallback(() => {
+    setGate('checking')
     getSession()
       .then((s) => setGate(s.authenticated ? 'open' : 'locked'))
-      .catch(() => setGate('locked'))
+      // "Backend is down" and "you are not signed in" were both shown as the
+      // sign-in form, which invites someone to type a password at a server
+      // that cannot receive it.
+      .catch((error) => setGate(error instanceof Unreachable ? 'unreachable' : 'locked'))
   }, [])
 
   useEffect(checkSession, [checkSession])
   useEffect(() => onSessionExpired(() => setGate('expired')), [])
 
   if (gate === 'checking') return <div className="booting">Connecting…</div>
+  if (gate === 'unreachable') {
+    return (
+      <div className="booting">
+        <p>Cannot reach the API at <code>{API_URL}</code>.</p>
+        <p className="muted">
+          Start the backend, then retry:
+          <br />
+          <code>.venv\Scripts\python -m uvicorn app.main:app --port 8000</code>
+        </p>
+        <button className="ghost" onClick={checkSession}>
+          Retry
+        </button>
+      </div>
+    )
+  }
   if (gate === 'locked' || gate === 'expired') {
     return <SignIn expired={gate === 'expired'} onSignedIn={() => setGate('open')} />
   }

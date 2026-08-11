@@ -36,6 +36,23 @@ let token: string | null = localStorage.getItem(TOKEN_KEY)
 /** Raised on a 401 so callers can show the sign-in screen instead of an error. */
 export class Unauthorized extends Error {}
 
+/**
+ * Raised when the backend could not be reached at all — refused, or accepting
+ * the connection without answering.
+ *
+ * Distinct from an error response, because the remedy is different: a 500 is
+ * something to report, an unreachable backend is a process to start. The boot
+ * screen conflated them by treating any failure as "not signed in", and a
+ * backend that accepted the connection and then went quiet produced neither —
+ * `fetch` has no default timeout, so the promise never settled and the app sat
+ * on "Connecting…" indefinitely.
+ */
+export class Unreachable extends Error {}
+
+// Long enough for a cold /scores call over a large universe, short enough that
+// a wedged backend is reported rather than waited on.
+const REQUEST_TIMEOUT_MS = 30_000
+
 export function getToken(): string | null {
   return token
 }
@@ -58,10 +75,22 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' }
   if (token) headers.Authorization = `Bearer ${token}`
 
-  const response = await fetch(`${API_URL}${path}`, {
-    ...init,
-    headers: { ...headers, ...(init?.headers as Record<string, string> | undefined) },
-  })
+  let response: Response
+  try {
+    response = await fetch(`${API_URL}${path}`, {
+      ...init,
+      headers: { ...headers, ...(init?.headers as Record<string, string> | undefined) },
+      signal: init?.signal ?? AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    })
+  } catch (cause) {
+    // fetch rejects with a TypeError for a refused connection and an
+    // AbortError/TimeoutError for the timeout above. Neither carries a status,
+    // so they are reported as one thing: the backend is not answering.
+    throw new Unreachable(
+      `Cannot reach the API at ${API_URL}. Is the backend running?`,
+      { cause },
+    )
+  }
 
   // A 401 from /auth/login means "wrong password" and belongs to the caller.
   // A 401 anywhere else means the token we sent is gone or stale.
