@@ -112,16 +112,26 @@ SEED_TICKERS: tuple[TickerSeed, ...] = (
     TickerSeed("WDC", "Western Digital Corporation", "storage_hardware", "NASDAQ"),
     TickerSeed("STX", "Seagate Technology Holdings", "storage_hardware", "NASDAQ"),
     TickerSeed("NTAP", "NetApp Inc.", "storage_hardware", "NASDAQ"),
-    TickerSeed("PSTG", "Pure Storage Inc.", "storage_hardware", "NYSE"),
+    # Pure Storage rebranded to Everpure and moved PSTG -> P in April 2026.
+    TickerSeed("P", "Everpure Inc.", "storage_hardware", "NYSE"),
     TickerSeed("DELL", "Dell Technologies Inc.", "storage_hardware", "NYSE"),
     TickerSeed("HPE", "Hewlett Packard Enterprise", "storage_hardware", "NYSE"),
     TickerSeed("MU", "Micron Technology Inc.", "memory", "NASDAQ"),
     TickerSeed("000660.KS", "SK hynix Inc.", "memory", "KRX"),
     TickerSeed("2408.TW", "Nanya Technology Corporation", "memory", "TWSE"),
+    # The two pure-play NAND names, which the cohort had neither of. SanDisk
+    # was spun out of Western Digital in February 2025 and is the flash half of
+    # what WDC used to be; Kioxia listed in Tokyo in December 2024. They run
+    # the Yokkaichi and Kitakami fabs as a joint venture, so they move together
+    # and neither is a substitute for the other.
+    TickerSeed("SNDK", "SanDisk Corporation", "memory", "NASDAQ"),
+    TickerSeed("285A.T", "Kioxia Holdings Corporation", "memory"),
+    TickerSeed("NTNX", "Nutanix Inc.", "storage_hardware", "NASDAQ"),
     # Data platforms: where the data is queried rather than kept.
     TickerSeed("SNOW", "Snowflake Inc.", "data_platform", "NYSE"),
     TickerSeed("MDB", "MongoDB Inc.", "data_platform", "NASDAQ"),
-    TickerSeed("CFLT", "Confluent Inc.", "data_platform", "NASDAQ"),
+    # Confluent (CFLT) was removed: IBM completed its acquisition in March
+    # 2026 and the shares were delisted from Nasdaq.
     TickerSeed("ORCL", "Oracle Corporation", "data_platform", "NYSE"),
     TickerSeed("TDC", "Teradata Corporation", "data_platform", "NYSE"),
     # The buildings. REITs, so they trade on leasing and power, not on chips.
@@ -169,7 +179,7 @@ SEED_TICKERS: tuple[TickerSeed, ...] = (
     TickerSeed("SOUN", "SoundHound AI Inc.", "ai_software", "NASDAQ"),
     # --- Data storage, deepened ----------------------------------------------
     TickerSeed("005930.KS", "Samsung Electronics Co.", "memory", "KRX"),
-    TickerSeed("QTM", "Quantum Corporation", "storage_hardware", "NASDAQ"),
+    TickerSeed("QMCO", "Quantum Corporation", "storage_hardware", "NASDAQ"),
     # Storage sold as a service rather than as a box.
     TickerSeed("DBX", "Dropbox Inc.", "cloud_storage", "NASDAQ"),
     TickerSeed("BOX", "Box Inc.", "cloud_storage", "NYSE"),
@@ -209,8 +219,9 @@ SEED_TICKERS: tuple[TickerSeed, ...] = (
     TickerSeed("QIA.DE", "QIAGEN N.V.", "life_science_tools"),
     TickerSeed("ARGX.BR", "argenx SE", "biotech"),
     TickerSeed("UCB.BR", "UCB SA", "pharma"),
-    TickerSeed("GALP.AS", "Galapagos NV", "biotech"),
-    TickerSeed("RECI.MI", "Recordati S.p.A.", "pharma"),
+    # GALP is Galp Energia, a Portuguese oil company. Galapagos is GLPG.
+    TickerSeed("GLPG.AS", "Galapagos NV", "biotech"),
+    TickerSeed("REC.MI", "Recordati S.p.A.", "pharma"),
     TickerSeed("GRF.MC", "Grifols SA", "biotech"),
     TickerSeed("ORNBV.HE", "Orion Oyj", "pharma"),
     TickerSeed("SOBI.ST", "Swedish Orphan Biovitrum AB", "biotech"),
@@ -240,7 +251,9 @@ SEED_TICKERS: tuple[TickerSeed, ...] = (
     # currencies, and the matcher indexes several symbols per company name so
     # both lines receive the same news rather than only the one that happened
     # to be indexed.
-    TickerSeed("2309.T", "CMIC Holdings Co.", "cro"),
+    # CMIC Holdings (2309.T) was removed: delisted from the TSE in March
+    # 2024 in a management buyout, so it had been private for two years
+    # by the time it was added here.
     TickerSeed("2395.T", "Shin Nippon Biomedical Laboratories", "cro"),
     TickerSeed("300347.SZ", "Hangzhou Tigermed Consulting Co.", "cro"),
     TickerSeed("3347.HK", "Hangzhou Tigermed Consulting Co.", "cro"),
@@ -256,7 +269,8 @@ SEED_TICKERS: tuple[TickerSeed, ...] = (
     TickerSeed("SYNGENE.NS", "Syngene International Ltd.", "cro"),
     # --- North America beyond the US ---------------------------------------
     TickerSeed("BHC.TO", "Bausch Health Companies", "pharma"),
-    TickerSeed("CXR.TO", "Cardiol Therapeutics", "biotech"),
+    # CXR.TO was Concordia International, long delisted. Cardiol is CRDL.
+    TickerSeed("CRDL.TO", "Cardiol Therapeutics", "biotech"),
 )
 
 
@@ -295,8 +309,17 @@ async def seed_stocks(db: AsyncSession) -> dict[str, int]:
     Only the sector is reconciled. Company name, exchange and currency are
     left alone: those are corrected from live vendor data elsewhere, and
     overwriting them here would undo that on every startup.
+
+    Symbols that leave the seed list are deactivated rather than deleted.
+    Tickers get renamed and companies get acquired — Pure Storage became
+    Everpure and moved PSTG to P, Confluent was bought and delisted — and
+    without this the old symbol stayed in the watchlist forever, priceless
+    and unexplained, while the replacement was added beside it. Deactivating
+    keeps the stored history and reverses itself if the symbol returns;
+    deleting would throw away price rows that are still true.
     """
     seeds = load_ticker_seeds()
+    seeded = {seed.ticker for seed in seeds}
     existing = {
         ticker: sector
         for ticker, sector in (await db.execute(select(Stock.ticker, Stock.sector))).all()
@@ -336,10 +359,34 @@ async def seed_stocks(db: AsyncSession) -> dict[str, int]:
         )
         added += 1
 
-    if added or reclassified:
+    retired = 0
+    restored = 0
+    for stock in (await db.execute(select(Stock))).scalars():
+        wanted = stock.ticker in seeded
+        if stock.is_active and not wanted:
+            logger.info("Retiring %s: no longer in the seed list", stock.ticker)
+            stock.is_active = False
+            retired += 1
+        elif not stock.is_active and wanted:
+            logger.info("Restoring %s: back in the seed list", stock.ticker)
+            stock.is_active = True
+            restored += 1
+
+    if added or reclassified or retired or restored:
         await db.commit()
-        logger.info("Seeded %d new stocks, reclassified %d", added, reclassified)
-    return {"added": added, "reclassified": reclassified}
+        logger.info(
+            "Seeded %d new stocks, reclassified %d, retired %d, restored %d",
+            added,
+            reclassified,
+            retired,
+            restored,
+        )
+    return {
+        "added": added,
+        "reclassified": reclassified,
+        "retired": retired,
+        "restored": restored,
+    }
 
 
 async def tickers_in_group(db: AsyncSession, group_key: str) -> list[str]:

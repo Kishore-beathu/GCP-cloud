@@ -60,7 +60,7 @@ async def jobs_status() -> dict:
 @router.post("/admin/seed", summary="Seed the stock universe", dependencies=[Depends(require_auth)])
 async def seed(db: AsyncSession = Depends(get_db)) -> dict:
     report = await seed_stocks(db)
-    return {"stocks_added": report["added"], "reclassified": report["reclassified"]}
+    return {"stocks_added": report["added"], **report}
 
 
 async def _resolve_targets(
