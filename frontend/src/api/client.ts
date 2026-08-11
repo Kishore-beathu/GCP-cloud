@@ -128,7 +128,7 @@ export function getSectorGroups(): Promise<{ total: number; groups: SectorGroupI
 }
 
 export function getStocks(
-  filters: { region?: string; q?: string; group?: string } = {},
+  filters: { region?: string; q?: string; group?: string; sector?: string } = {},
 ): Promise<Stock[]> {
   const params = new URLSearchParams({ limit: '1000' })
   for (const [key, value] of Object.entries(filters)) {

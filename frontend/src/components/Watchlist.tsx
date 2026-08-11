@@ -22,6 +22,36 @@ const FALLBACK_LABELS: Record<SectorGroup, string> = {
 
 const GROUP_ORDER: SectorGroup[] = ['pharma_life_sciences', 'ai', 'data_storage', 'other']
 
+// Marks a dropdown value as a sector rather than a group. One <select> keeps
+// the two levels in one control; the prefix is what tells them apart, since a
+// sector key and a group key are both bare strings.
+export const SECTOR_PREFIX = 'sector:'
+
+// The API returns sector keys, not display names. Anything missing here falls
+// back to the raw key rather than being hidden, so a sector added to the
+// backend shows up immediately — ugly, but present.
+const SECTOR_LABELS: Record<string, string> = {
+  pharma: 'Pharma',
+  biotech: 'Biotech',
+  cdmo: 'Contract manufacturing (CDMO)',
+  cro: 'Contract research (CRO)',
+  life_science_tools: 'Life science tools',
+  medtech: 'Medical devices',
+  consumer_health: 'Consumer health',
+  health_it: 'Health IT',
+  ai_tech: 'AI platforms',
+  ai_semiconductor: 'AI semiconductors',
+  ai_equipment: 'Semiconductor equipment',
+  ai_networking: 'AI networking',
+  ai_software: 'AI software',
+  ai_health: 'AI drug discovery',
+  storage_hardware: 'Storage hardware',
+  memory: 'Memory',
+  cloud_storage: 'Cloud storage',
+  data_platform: 'Data platforms',
+  data_center: 'Data centres',
+}
+
 interface Props {
   stocks: Stock[]
   groups: SectorGroupInfo[]
@@ -96,10 +126,21 @@ export function Watchlist({
         aria-label="Filter by industry"
       >
         <option value="">All industries</option>
+        {/* Groups are the headings; the sectors inside them are what someone
+            actually asks for — "the CROs", "the memory names". Without these
+            a cohort could only be found by knowing every ticker in it and
+            reading past the ninety-odd others it is sorted among. */}
         {(groups.length ? groups : []).map((info) => (
-          <option key={info.key} value={info.key}>
-            {info.label} ({info.tracked_symbols})
-          </option>
+          <optgroup key={info.key} label={info.label}>
+            <option value={info.key}>
+              All {info.label} ({info.tracked_symbols})
+            </option>
+            {info.sectors.map((sector) => (
+              <option key={sector} value={`${SECTOR_PREFIX}${sector}`}>
+                {SECTOR_LABELS[sector] ?? sector}
+              </option>
+            ))}
+          </optgroup>
         ))}
       </select>
       <select

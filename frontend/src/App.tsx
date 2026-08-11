@@ -16,7 +16,7 @@ import { PortfolioPanel } from './components/PortfolioPanel'
 import { PriceChart } from './components/PriceChart'
 import { ScorePanel } from './components/ScorePanel'
 import { SignIn } from './components/SignIn'
-import { Watchlist } from './components/Watchlist'
+import { SECTOR_PREFIX, Watchlist } from './components/Watchlist'
 import { ChangeText } from './components/badges'
 import { useAsync } from './hooks/useAsync'
 import { useTickerSocket } from './hooks/useTickerSocket'
@@ -47,12 +47,31 @@ export default function App() {
 
 function Dashboard({ onSignOut }: { onSignOut: () => void }) {
   const [region, setRegion] = useState('')
+  // One control, two levels: a bare value is an industry group, a `sector:`
+  // prefix is one sector inside it. They go to different query parameters
+  // because the API filters them differently — a group expands to its member
+  // sectors, a sector matches exactly.
   const [group, setGroup] = useState('')
+  const isSector = group.startsWith(SECTOR_PREFIX)
   const stocks = useAsync(
-    () => getStocks({ region: region || undefined, group: group || undefined }),
-    [region, group],
+    () =>
+      getStocks({
+        region: region || undefined,
+        group: !isSector && group ? group : undefined,
+        sector: isSector ? group.slice(SECTOR_PREFIX.length) : undefined,
+      }),
+    [region, group, isSector],
   )
   const sectorGroups = useAsync(() => getSectorGroups(), [])
+
+  // /scores filters by group, not by sector. Narrowing to one sector shows the
+  // ranks for the group that contains it rather than the whole universe —
+  // sending "sector:cro" would be rejected as an unknown group.
+  const scoreGroup = useMemo(() => {
+    if (!isSector) return group
+    const sector = group.slice(SECTOR_PREFIX.length)
+    return sectorGroups.data?.groups.find((info) => info.sectors.includes(sector))?.key ?? ''
+  }, [group, isSector, sectorGroups.data])
   const [selected, setSelected] = useState<string | null>(null)
   const [filter, setFilter] = useState('')
 
@@ -137,7 +156,7 @@ function Dashboard({ onSignOut }: { onSignOut: () => void }) {
           <div className="columns">
             <NewsFeed ticker={active} />
             <div className="stack">
-              <ScorePanel group={group} onSelect={setSelected} selected={active} />
+              <ScorePanel group={scoreGroup} onSelect={setSelected} selected={active} />
               <AlertsPanel tickers={allTickers} defaultTicker={active} />
               <PortfolioPanel tickers={allTickers} defaultTicker={active} />
               {active && <BacktestPanel ticker={active} />}
