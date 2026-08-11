@@ -403,3 +403,73 @@ async def test_uncovered_symbols_are_named_not_just_counted(db, seeded_stocks, m
         assert result["uncovered_symbols"] == ["PFE"]
     finally:
         get_settings.cache_clear()
+
+
+def test_intraday_drops_the_zero_volume_stub_yahoo_appends():
+    """The padding bar was being read as the current price.
+
+    Yahoo ends an intraday series with a bar carrying a close and no trades.
+    Kept, it became the newest bar: relative volume divided by zero volume and
+    read 0.00x, so no volume-confirmed setup could trigger, and its stale close
+    was taken as the entry price.
+    """
+    from app.integrations.yahoo import parse_intraday
+
+    payload = {
+        "chart": {
+            "result": [
+                {
+                    "meta": {"currency": "USD", "symbol": "MU"},
+                    "timestamp": [1786492800, 1786493100, 1786493400],
+                    "indicators": {
+                        "quote": [
+                            {
+                                "open": [100.0, 101.0, 101.5],
+                                "high": [100.5, 101.5, 101.5],
+                                "low": [99.5, 100.5, 101.5],
+                                "close": [100.2, 101.2, 101.5],
+                                "volume": [5000, 4000, 0],
+                            }
+                        ]
+                    },
+                }
+            ]
+        }
+    }
+
+    bars = parse_intraday("MU", payload, None)
+
+    assert len(bars) == 2
+    assert bars[-1].close == 101.2
+    assert bars[-1].volume == 4000
+
+
+def test_intraday_keeps_a_quiet_bar_in_the_middle_of_a_session():
+    """An interior zero is a real quiet interval, not padding."""
+    from app.integrations.yahoo import parse_intraday
+
+    payload = {
+        "chart": {
+            "result": [
+                {
+                    "timestamp": [1786492800, 1786493100, 1786493400],
+                    "indicators": {
+                        "quote": [
+                            {
+                                "open": [100.0, 101.0, 101.5],
+                                "high": [100.5, 101.5, 102.0],
+                                "low": [99.5, 100.5, 101.0],
+                                "close": [100.2, 101.2, 101.8],
+                                "volume": [5000, 0, 3000],
+                            }
+                        ]
+                    },
+                }
+            ]
+        }
+    }
+
+    bars = parse_intraday("MU", payload, None)
+
+    assert len(bars) == 3
+    assert bars[1].volume == 0

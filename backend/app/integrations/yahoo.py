@@ -341,6 +341,18 @@ def parse_intraday(ticker: str, payload: dict, keep_last: int | None) -> list[Ba
         )
 
     bars.sort(key=lambda bar: bar.at)
+
+    # Yahoo pads the end of an intraday series with a bar that carries a close
+    # but no trades — the session's closing stub, or the not-yet-started
+    # current interval. Keeping it makes the newest bar a phantom: relative
+    # volume divides by it and reads 0.00x, so no volume-confirmed setup can
+    # ever trigger, and worse, its stale close is taken as the current price
+    # and becomes the entry. Only *trailing* zeros are dropped; a quiet
+    # interior bar is real and its zero says something.
+    if any(bar.volume for bar in bars):
+        while bars and not bars[-1].volume:
+            bars.pop()
+
     return bars[-keep_last:] if keep_last else bars
 
 
