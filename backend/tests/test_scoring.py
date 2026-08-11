@@ -145,8 +145,28 @@ async def test_a_symbol_with_only_news_is_still_scored(db, seeded_stocks):
 
     assert item.technical_score is None
     assert item.sentiment_score is not None
-    assert item.coverage == scoring.PILLAR_WEIGHTS["sentiment"]
     assert item.news_count_30d == 3
+    # Three articles earn three fifths of the pillar's weight, and coverage
+    # says so rather than claiming the score rests on a full input.
+    assert item.sentiment_confidence == 0.6
+    assert item.coverage == round(scoring.PILLAR_WEIGHTS["sentiment"] * 0.6, 2)
+
+
+@pytest.mark.asyncio
+async def test_one_article_cannot_carry_the_full_sentiment_weight(db, seeded_stocks):
+    """A single story is an anecdote; it must not move 40% of a symbol's rank."""
+    thin, thick = seeded_stocks
+    for stock in (thin, thick):
+        await add_prices(db, stock, [100.0 * 1.002**day for day in range(80)])
+    await add_news(db, thin, [0.9])
+    await add_news(db, thick, [0.9] * 6)
+
+    scored = {item.ticker: item for item in await scoring.score_universe(db)}
+
+    assert scored[thin.ticker].sentiment_confidence == 0.2
+    assert scored[thick.ticker].sentiment_confidence == 1.0
+    # The thinly covered symbol leans on its price history instead.
+    assert scored[thin.ticker].coverage < scored[thick.ticker].coverage
 
 
 @pytest.mark.asyncio
@@ -308,6 +328,36 @@ async def test_validation_refuses_to_rank_when_nothing_separates(db):
 
     # No dispersion to rank on, so no spread is reported at all.
     assert result["status"] == "insufficient_history" or not result.get("summary")
+
+
+def test_an_unmeasurable_pillar_says_why_rather_than_returning_null():
+    """"Could not measure" and "measured, found nothing" are different results.
+
+    A bare null reported both identically, so a sentiment pillar absent for
+    three of six periods gave no way to tell whether there was no news, too few
+    symbols, or no dispersion among the ones there were.
+    """
+    forward = {f"S{index:02d}": float(index) for index in range(12)}
+
+    too_few = scoring._spread([("S00", 1.0), ("S01", 2.0)], forward)
+    assert too_few["spread"] is None
+    assert too_few["reason"] == "too_few_symbols"
+
+    tied = scoring._spread([(symbol, 50.0) for symbol in forward], forward)
+    assert tied["spread"] is None
+    assert tied["reason"] == "no_dispersion"
+
+    unpriced = scoring._spread(
+        [(f"X{index:02d}", float(index)) for index in range(12)], forward
+    )
+    assert unpriced["spread"] is None
+    assert unpriced["reason"] == "no_forward_returns"
+
+    measured = scoring._spread(
+        [(symbol, float(symbol[1:])) for symbol in forward], forward
+    )
+    assert measured["spread"] is not None
+    assert "reason" not in measured
 
 
 @pytest.mark.asyncio

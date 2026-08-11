@@ -25,6 +25,12 @@ its peers) and deliberately not their claims:
 Two pillars, because they are what the stored data supports: price behaviour
 and news. Fundamentals are absent and their absence is stated rather than
 papered over — see docs/COMPARISON.md.
+
+The news pillar's weight is not fixed: it scales with how many articles stand
+behind it, so a symbol with one story is ranked mostly on its price rather than
+on a percentile that is mostly sort order. `coverage` and
+`sentiment_confidence` report how much of the intended input each score
+actually used.
 """
 
 from __future__ import annotations
@@ -77,6 +83,8 @@ class StockScore:
     score: float
     technical_score: float | None
     sentiment_score: float | None
+    # 0-1: how much of the sentiment pillar's weight the news volume earned.
+    sentiment_confidence: float = 0.0
     rank: int = 0
     universe_size: int = 0
     sector_rank: int = 0
@@ -94,6 +102,7 @@ class StockScore:
             "score": self.score,
             "technical_score": self.technical_score,
             "sentiment_score": self.sentiment_score,
+            "sentiment_confidence": self.sentiment_confidence,
             "rank": self.rank,
             "universe_size": self.universe_size,
             "sector_rank": self.sector_rank,
@@ -133,9 +142,61 @@ SENTIMENT_WEIGHTS: dict[str, tuple[str, float, str]] = {
 # thinly covered listing would otherwise be ranked mostly on noise.
 PILLAR_WEIGHTS = {"technical": 0.6, "sentiment": 0.4}
 
+# The weight above is what the sentiment pillar earns at *full* coverage. Held
+# flat it says a symbol with one article deserves the same 40% of its rank as a
+# symbol with forty, which is the opposite of what the number is worth: one
+# story is an anecdote whose percentile is mostly sort order. So the pillar's
+# weight ramps with the evidence behind it and reaches 0.4 at this many
+# articles. This is a statement about information, not a fitted parameter — it
+# is deliberately not tuned against the validation window it is measured in.
+SENTIMENT_FULL_WEIGHT_ARTICLES = 5
+
 # Below this many sessions the technical pillar is not computed at all. Twenty
 # sessions is the shortest window any of its factors needs.
 MIN_SESSIONS = 21
+
+
+def sentiment_confidence(news_count: int) -> float:
+    """How much of the sentiment pillar's weight this much news has earned.
+
+    Linear from nothing to full weight, because there is no basis in the data
+    for a more elaborate curve and inventing one would be false precision.
+    """
+    if news_count <= 0:
+        return 0.0
+    return min(1.0, news_count / SENTIMENT_FULL_WEIGHT_ARTICLES)
+
+
+def _blend(
+    technical: float | None, sentiment: float | None, news_count: int
+) -> tuple[float, float] | None:
+    """Combine the pillars, discounting sentiment by the news behind it.
+
+    Returns the composite and the total weight it was built from — the latter
+    is `coverage`, and it now means what it says: the share of the intended
+    inputs that actually contributed. A symbol scored on price alone reports
+    0.6; one with a single article reports 0.68, not 1.0.
+
+    Shared by the live score and the validation harness on purpose. If the
+    backtest blended differently from the endpoint, it would be measuring a
+    ranking nobody is served.
+    """
+    weights: dict[str, float] = {}
+    values: dict[str, float] = {}
+
+    if technical is not None:
+        weights["technical"] = PILLAR_WEIGHTS["technical"]
+        values["technical"] = technical
+    if sentiment is not None:
+        confidence = sentiment_confidence(news_count)
+        if confidence:
+            weights["sentiment"] = PILLAR_WEIGHTS["sentiment"] * confidence
+            values["sentiment"] = sentiment
+
+    total = sum(weights.values())
+    if not total:
+        return None
+    return sum(weights[name] * value for name, value in values.items()) / total, total
 
 
 @dataclass
@@ -370,26 +431,20 @@ async def score_universe(db: AsyncSession, days: int = 30) -> list[StockScore]:
             raw, sentiment_ranks, SENTIMENT_WEIGHTS, raw.sentiment
         )
 
-        available = {
-            "technical": technical,
-            "sentiment": sentiment,
-        }
-        present = {name: value for name, value in available.items() if value is not None}
-        if not present:
+        blended = _blend(technical, sentiment, raw.news_count)
+        if blended is None:
             continue
-
-        weight_total = sum(PILLAR_WEIGHTS[name] for name in present)
-        composite = sum(PILLAR_WEIGHTS[name] * value for name, value in present.items())
-        composite = round(composite / weight_total, 2)
+        composite, weight_total = blended
 
         scored.append(
             StockScore(
                 ticker=raw.stock.ticker,
                 company_name=raw.stock.company_name,
                 sector_group=sectors.group_for(raw.stock.sector),
-                score=composite,
+                score=round(composite, 2),
                 technical_score=technical,
                 sentiment_score=sentiment,
+                sentiment_confidence=round(sentiment_confidence(raw.news_count), 2),
                 # What share of the intended inputs this score actually used.
                 coverage=round(weight_total, 2),
                 factors=sorted(
@@ -457,21 +512,40 @@ def _median(values: list[float]) -> float | None:
     return (ordered[middle - 1] + ordered[middle]) / 2
 
 
-def _spread(ranked: list[tuple[str, float]], forward: dict[str, float]) -> dict | None:
-    """Quintile the ranking and report top-minus-bottom forward return."""
-    if len(ranked) < 10:
+def _stdev(values: list[float]) -> float | None:
+    """Sample standard deviation, or None when one period cannot have one."""
+    if len(values) < 2:
         return None
+    mean = sum(values) / len(values)
+    variance = sum((value - mean) ** 2 for value in values) / (len(values) - 1)
+    return round(variance**0.5, 4)
+
+
+def _spread(ranked: list[tuple[str, float]], forward: dict[str, float]) -> dict:
+    """Quintile the ranking and report top-minus-bottom forward return.
+
+    Always returns a dict. When the spread cannot be computed it says which of
+    the three reasons applied, because "we could not measure this pillar here"
+    and "we measured it and it was flat" are different findings and a bare
+    null reported them identically.
+    """
+    if len(ranked) < 10:
+        return {"spread": None, "reason": "too_few_symbols", "symbols": len(ranked)}
     if ranked[0][1] == ranked[-1][1]:
         # Every symbol scored the same: the order is arbitrary and any spread
         # would be an artefact of the sort, not a finding.
-        return None
+        return {"spread": None, "reason": "no_dispersion", "symbols": len(ranked)}
 
     ordered = sorted(ranked, key=lambda row: row[1], reverse=True)
     size = max(1, len(ordered) // 5)
     top = [forward[symbol] for symbol, _ in ordered[:size] if symbol in forward]
     bottom = [forward[symbol] for symbol, _ in ordered[-size:] if symbol in forward]
     if not top or not bottom:
-        return None
+        return {
+            "spread": None,
+            "reason": "no_forward_returns",
+            "symbols": len(ordered),
+        }
 
     top_mean = sum(top) / len(top)
     bottom_mean = sum(bottom) / len(bottom)
@@ -497,6 +571,7 @@ def _rank_at(
     """
     tech_inputs: dict[str, Technicals] = {}
     sent_inputs: dict[str, dict[str, float | None]] = {}
+    sent_counts: dict[str, int] = {}
 
     for symbol, series in history.items():
         past = [row for row in series if row[0] <= as_of]
@@ -509,6 +584,7 @@ def _rank_at(
             row for row in news.get(symbol, []) if window_start <= row[0] <= as_of
         ]
         sent_inputs[symbol] = _summarise_news_at(rows, as_of)
+        sent_counts[symbol] = len(rows)
 
     if not tech_inputs:
         return {"technical": [], "sentiment": [], "blended": []}
@@ -537,15 +613,9 @@ def _rank_at(
         if sentiment is not None:
             rankings["sentiment"].append((symbol, sentiment))
 
-        present = {
-            name: value
-            for name, value in (("technical", technical), ("sentiment", sentiment))
-            if value is not None
-        }
-        if present:
-            total = sum(PILLAR_WEIGHTS[name] for name in present)
-            blended = sum(PILLAR_WEIGHTS[n] * v for n, v in present.items()) / total
-            rankings["blended"].append((symbol, blended))
+        blended = _blend(technical, sentiment, sent_counts.get(symbol, 0))
+        if blended is not None:
+            rankings["blended"].append((symbol, blended[0]))
 
     return rankings
 
@@ -683,7 +753,7 @@ async def validate(
         period = {"as_of": as_of.date().isoformat(), "symbols": len(forward)}
         for strategy, ranked in rankings.items():
             period[strategy] = _spread(ranked, forward)
-        if any(period.get(name) for name in rankings):
+        if any(period[name]["spread"] is not None for name in rankings):
             results.append(period)
 
     if not results:
@@ -702,19 +772,35 @@ async def validate(
         spreads = [
             period[strategy]["spread"]
             for period in results
-            if period.get(strategy) is not None
+            if period[strategy]["spread"] is not None
         ]
-        if not spreads:
-            continue
-        summary[strategy] = {
-            "periods": len(spreads),
-            "mean_spread": round(sum(spreads) / len(spreads), 4),
-            "median_spread": round(_median(spreads) or 0.0, 4),
-            # The honest headline: how often did the top half of the ranking
-            # actually beat the bottom? Five of six is a signal; three of six
-            # is a coin toss with extra steps.
-            "periods_positive": sum(1 for value in spreads if value > 0),
-        }
+        unmeasured: dict[str, int] = {}
+        for period in results:
+            reason = period[strategy].get("reason")
+            if period[strategy]["spread"] is None and reason:
+                unmeasured[reason] = unmeasured.get(reason, 0) + 1
+
+        entry: dict = {"periods": len(spreads)}
+        if spreads:
+            entry.update(
+                {
+                    "mean_spread": round(sum(spreads) / len(spreads), 4),
+                    "median_spread": round(_median(spreads) or 0.0, 4),
+                    # The honest headline: how often did the top half of the
+                    # ranking actually beat the bottom? Five of six is a
+                    # signal; three of six is a coin toss with extra steps.
+                    "periods_positive": sum(1 for value in spreads if value > 0),
+                    # Spread across periods, so a large mean built out of wild
+                    # swings cannot pass for a stable one. With this few
+                    # periods it is context, not a significance test.
+                    "spread_stdev": _stdev(spreads),
+                }
+            )
+        # Why the other periods could not be measured, rather than a silent gap
+        # in the period list that reads as an absent result.
+        if unmeasured:
+            entry["periods_unmeasured"] = unmeasured
+        summary[strategy] = entry
 
     return {
         "status": "ok",
@@ -724,8 +810,11 @@ async def validate(
         "summary": summary,
         "periods": results,
         "caveat": (
-            "Overlapping windows on one universe, no transaction costs, no "
-            "survivorship control, and the periods are not independent. "
-            "Evidence, not proof."
+            ("Overlapping windows, " if step_days < horizon_days else "")
+            + "one universe, no transaction costs, no survivorship control, "
+            "and the periods share market conditions rather than being "
+            "independent draws. With this many periods the standard error on "
+            "any mean spread is wide enough to contain zero unless the effect "
+            "is very large. Evidence, not proof."
         ),
     }
