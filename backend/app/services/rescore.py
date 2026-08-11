@@ -18,7 +18,8 @@ from dataclasses import dataclass
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import NewsArticle, SentimentScore
+from app.models import NewsArticle, SentimentScore, Stock
+from app.services import sectors
 from app.services.sentiment import SentimentAnalyzer, get_analyzer
 
 logger = logging.getLogger(__name__)
@@ -75,18 +76,23 @@ async def rescore_articles(
     report = RescoreReport()
 
     query = (
-        select(NewsArticle, SentimentScore)
+        # The symbol's sector comes along because the lexicon is sector-aware:
+        # rescoring without it would quietly re-apply the pharma reading to
+        # every storage and AI symbol and undo the overlay.
+        select(NewsArticle, SentimentScore, Stock.sector)
         .join(SentimentScore, SentimentScore.article_id == NewsArticle.id)
+        .join(Stock, Stock.id == NewsArticle.ticker_id)
         .order_by(NewsArticle.id)
         .limit(limit)
     )
     if only_stale:
         query = query.where(SentimentScore.model_version != analyzer.model_version)
 
-    for article, score in (await db.execute(query)).all():
+    for article, score, sector in (await db.execute(query)).all():
         report.examined += 1
 
-        sentiment = analyzer.analyze_sentiment(article.headline, article.body)
+        group = sectors.group_for(sector)
+        sentiment = analyzer.analyze_sentiment(article.headline, article.body, group)
         event = analyzer.classify_event_type(article.headline, article.body)
 
         changed = (

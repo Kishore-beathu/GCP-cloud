@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from app.models import EventType, Sentiment
-from app.services.sentiment import SentimentAnalyzer
+from app.services.sentiment import LexiconAnalyzer, SentimentAnalyzer
 
 
 @pytest.fixture
@@ -39,7 +39,7 @@ def test_score_bounds_and_confidence(analyzer: SentimentAnalyzer):
     result = analyzer.analyze_sentiment("FDA approves breakthrough therapy designation")
     assert -1.0 <= result.score <= 1.0
     assert 0.0 <= result.confidence <= 1.0
-    assert result.model_version == "lexicon-v2"
+    assert result.model_version == LexiconAnalyzer.model_version
 
 
 def test_empty_input_is_neutral(analyzer: SentimentAnalyzer):
@@ -72,4 +72,108 @@ def test_event_classification(analyzer: SentimentAnalyzer, headline: str, expect
 
 def test_unknown_backend_falls_back_to_lexicon():
     analyzer = SentimentAnalyzer(backend="does-not-exist")
-    assert analyzer.model_version == "lexicon-v2"
+    assert analyzer.model_version == LexiconAnalyzer.model_version
+
+
+# --- Sector overlays ----------------------------------------------------------
+# The lexicon was tuned on pharma and was silent on the vocabulary of the AI and
+# storage names added later, which is why those symbols scored a flat 0.0 and
+# their sentiment percentiles were ties.
+
+
+def test_chip_supply_news_is_no_longer_invisible():
+    """Real headlines off the dashboard, which the base lexicon scored 0.00.
+
+    Deliberately free of the generic business words the base lexicon already
+    knows ("record", "win", "growth"), so this measures the overlay rather than
+    the vocabulary both share.
+    """
+    analyzer = LexiconAnalyzer()
+    for headline in (
+        "SK Hynix HBM backlog extends as hyperscaler demand climbs",
+        "Samsung sold out of HBM capacity through next year",
+        "Samsung's $576 Billion Chip Push Gets New Government Backing",
+    ):
+        assert analyzer.score(headline).score == 0.0, headline
+        storage = analyzer.score(headline, sector_group="data_storage")
+        assert storage.score > 0.5, headline
+        assert storage.sentiment is Sentiment.POSITIVE, headline
+
+
+def test_cycle_downside_is_read_as_negative_for_a_supplier():
+    """The overlay has to cut both ways or it is just an optimism dial."""
+    analyzer = LexiconAnalyzer()
+    headline = "Inventory correction drives severe ASP erosion"
+
+    assert analyzer.score(headline).score == 0.0
+    assert analyzer.score(headline, sector_group="data_storage").sentiment is Sentiment.NEGATIVE
+
+
+def test_a_genuinely_neutral_headline_stays_neutral():
+    """The overlay must add vocabulary, not manufacture an opinion."""
+    analyzer = LexiconAnalyzer()
+
+    result = analyzer.score(
+        "Micron vs. SK hynix: One Stock Rules AI Memory", sector_group="data_storage"
+    )
+
+    assert result.sentiment is Sentiment.NEUTRAL
+
+
+def test_a_shortage_is_read_as_pricing_power_for_a_supplier():
+    """The same word, opposite meaning, decided by whose story it is.
+
+    A drugmaker that cannot supply its product is in trouble. A memory maker
+    in a shortage can raise prices. One global weight cannot be right for both.
+    """
+    analyzer = LexiconAnalyzer()
+    headline = "Memory chip shortage could last two more years"
+
+    pharma = analyzer.score(headline, sector_group="pharma_life_sciences")
+    storage = analyzer.score(headline, sector_group="data_storage")
+
+    assert pharma.score < 0
+    assert storage.score > 0
+
+
+def test_the_inverted_term_does_not_fire_on_both_sides_at_once():
+    """Left in both sets it would net to zero and read as no opinion."""
+    analyzer = LexiconAnalyzer()
+
+    result = analyzer.explain("Severe shortage reported", sector_group="data_storage")
+    polarities = {match["polarity"] for match in result["matches"] if "shortage" in match["term"]}
+
+    assert polarities == {"positive"}
+
+
+def test_export_controls_are_negative_for_a_chipmaker():
+    analyzer = LexiconAnalyzer()
+
+    result = analyzer.score(
+        "New export controls restrict shipments to key customers", sector_group="ai"
+    )
+
+    assert result.sentiment is Sentiment.NEGATIVE
+
+
+def test_pharma_scoring_is_unchanged_by_the_overlays():
+    """A regression here would be the overlay leaking into the original case."""
+    analyzer = LexiconAnalyzer()
+    headline = "FDA grants accelerated approval after the trial met its primary endpoint"
+
+    base = analyzer.score(headline)
+    pharma = analyzer.score(headline, sector_group="pharma_life_sciences")
+
+    assert base.score == pharma.score
+    assert base.sentiment is Sentiment.POSITIVE
+
+
+def test_an_unmapped_sector_gets_the_base_lexicon():
+    """Unknown groups must not raise, and must not silently pick an overlay."""
+    analyzer = LexiconAnalyzer()
+    headline = "Company reports record revenue"
+
+    assert analyzer.score(headline, sector_group="other").score == analyzer.score(headline).score
+    assert analyzer.score(headline, sector_group="not-a-group").score == analyzer.score(
+        headline
+    ).score

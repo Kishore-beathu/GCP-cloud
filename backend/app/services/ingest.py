@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import NewsArticle, SentimentScore, Stock
 from app.services.alerts import PendingNotification, deliver_all, evaluate_alerts_for_article
+from app.services import sectors
 from app.services.dedup import DEFAULT_WINDOW, is_duplicate
 from app.services.sentiment import SentimentAnalyzer, get_analyzer
 
@@ -195,7 +196,12 @@ async def store_articles(
             report.merged_duplicate += 1
             continue
 
-        sentiment = analyzer.analyze_sentiment(raw.headline, raw.body)
+        # The lexicon reads the same words differently depending on whose story
+        # it is: a shortage is a supply failure for a drugmaker and pricing
+        # power for a memory maker.
+        sentiment = analyzer.analyze_sentiment(
+            raw.headline, raw.body, sectors.group_for(stock.sector)
+        )
         event = analyzer.classify_event_type(raw.headline, raw.body)
         score = SentimentScore(
             article=article,

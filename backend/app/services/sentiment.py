@@ -188,6 +188,109 @@ _NEGATIVE_TERMS: dict[str, float] = {
 }
 
 
+# --- Sector overlays ---------------------------------------------------------
+# The lexicon above was tuned entirely on pharma and biotech, which was right
+# when the universe was pharma and biotech. It is silent on the vocabulary of
+# semiconductors, memory and AI infrastructure: "design win", "hyperscaler",
+# "backlog", "export controls" and "tape-out" carry no weight at all, so those
+# symbols scored a flat 0.0 and their sentiment percentiles were ties.
+#
+# Worse than silent in one place. A *shortage* is bad news for a drugmaker that
+# cannot supply its product, and good news for a memory maker, because scarcity
+# is what lets it raise prices. A single global weight cannot be right for both,
+# so the sign is decided per sector rather than argued about globally.
+
+
+@dataclass(frozen=True)
+class _Overlay:
+    """Sector-specific additions to, and corrections of, the base lexicon."""
+
+    positive: dict[str, float]
+    negative: dict[str, float]
+    # Base terms whose polarity is simply wrong for this sector. Suppressed
+    # before the overlay's own terms are added, so an entry can be moved from
+    # one side to the other by listing it in both places.
+    suppress_positive: frozenset[str] = frozenset()
+    suppress_negative: frozenset[str] = frozenset()
+
+
+_SEMICONDUCTOR_TERMS_POSITIVE: dict[str, float] = {
+    # --- Demand and pricing -------------------------------------------------
+    r"design win": 0.9,
+    r"(?:record|strong) (?:bookings|backlog|orders)": 0.9,
+    r"backlog": 0.55,
+    r"bookings": 0.55,
+    r"sold out": 0.9,
+    r"price (?:increase|hike|rise)": 0.8,
+    r"pricing power": 0.85,
+    r"(?:raises?|raised|hikes?) prices": 0.8,
+    r"supercycle": 0.9,
+    r"(?:demand|orders) (?:surge|soar|jump)\w*": 0.85,
+    r"capacity expansion": 0.7,
+    r"(?:qualifies|qualified|qualification) (?:for|with)": 0.7,
+    r"(?:volume|mass) production": 0.75,
+    r"yield improvement": 0.8,
+    r"tape[- ]out": 0.6,
+    r"(?:hyperscaler|data cent(?:er|re)) (?:demand|capex|spending)": 0.8,
+    r"ai (?:demand|capex|spending|buildout)": 0.8,
+    r"(?:hbm|dram|nand|ssd|flash)\b": 0.15,
+    r"next[- ]gen(?:eration)?": 0.5,
+    r"(?:node|process) (?:ramp|shrink)": 0.6,
+    r"foundry (?:win|deal|agreement)": 0.85,
+    r"(?:multi[- ]year|long[- ]term) (?:supply|purchase) agreement": 0.85,
+    r"government (?:backing|support|subsid\w*|funding)": 0.7,
+    r"chips act": 0.6,
+}
+
+_SEMICONDUCTOR_TERMS_NEGATIVE: dict[str, float] = {
+    # --- Cycle and policy risk ----------------------------------------------
+    r"(?:inventory|channel) (?:glut|correction|build)": 0.9,
+    r"oversupply": 0.95,
+    r"(?:price|asp) (?:decline|erosion|drop|collapse)": 0.9,
+    r"(?:demand|order) (?:weakness|slowdown|softness)": 0.85,
+    r"(?:cuts?|reduc\w*|trims?) (?:capex|capital spending|production|output)": 0.85,
+    r"export (?:controls?|restrictions?|ban)": 0.9,
+    r"entity list": 0.9,
+    r"sanction\w*": 0.8,
+    r"tariff\w*": 0.7,
+    r"yield (?:issues?|problems?)": 0.85,
+    r"(?:fab|plant|production) (?:halt|outage|fire|shutdown)": 0.9,
+    r"(?:loses?|lost) (?:a )?(?:key |major )?(?:customer|order|contract)": 0.9,
+    r"(?:share|market share) loss": 0.8,
+    r"obsole\w*": 0.7,
+    r"write[- ]down": 0.8,
+}
+
+# For a maker of a scarce component, scarcity is pricing power. These are the
+# base lexicon's negatives read the other way round.
+_SCARCITY_AS_STRENGTH: dict[str, float] = {
+    r"shortage": 0.8,
+    r"crunch": 0.7,
+    r"(?:tight|tightening) supply": 0.8,
+    r"supply constrain\w*": 0.7,
+    r"allocation": 0.6,
+    r"undersupply": 0.85,
+}
+
+_SUPPLY_SIDE_OVERLAY = _Overlay(
+    positive={
+        **_SEMICONDUCTOR_TERMS_POSITIVE,
+        **_SCARCITY_AS_STRENGTH,
+    },
+    negative=_SEMICONDUCTOR_TERMS_NEGATIVE,
+    # "shortage" ships as a negative for the pharma case and must not fire on
+    # both sides at once, which would net to zero and look like no opinion.
+    suppress_negative=frozenset({r"shortage"}),
+)
+
+# AI names are largely the same supply chain read from the demand side; the
+# overlay is shared rather than duplicated, and diverges when evidence says to.
+_OVERLAYS: dict[str, _Overlay] = {
+    "data_storage": _SUPPLY_SIDE_OVERLAY,
+    "ai": _SUPPLY_SIDE_OVERLAY,
+}
+
+
 def _compile(terms: dict[str, float]) -> tuple[tuple[re.Pattern[str], float], ...]:
     """Compile each term with a leading word boundary, longest phrase first.
 
@@ -202,6 +305,35 @@ def _compile(terms: dict[str, float]) -> tuple[tuple[re.Pattern[str], float], ..
 
 _POSITIVE_PATTERNS = _compile(_POSITIVE_TERMS)
 _NEGATIVE_PATTERNS = _compile(_NEGATIVE_TERMS)
+
+_Patterns = tuple[tuple[re.Pattern[str], float], ...]
+
+
+@lru_cache(maxsize=16)
+def _patterns_for(sector_group: str | None) -> tuple[_Patterns, _Patterns]:
+    """The positive and negative pattern sets that apply to one sector group.
+
+    Cached because compiling ~200 patterns per article would dwarf the cost of
+    matching them. An unknown or missing group gets the base lexicon, so a
+    symbol whose sector is unmapped is scored exactly as it was before.
+    """
+    overlay = _OVERLAYS.get(sector_group or "")
+    if overlay is None:
+        return _POSITIVE_PATTERNS, _NEGATIVE_PATTERNS
+
+    positive = {
+        term: weight
+        for term, weight in _POSITIVE_TERMS.items()
+        if term not in overlay.suppress_positive
+    }
+    negative = {
+        term: weight
+        for term, weight in _NEGATIVE_TERMS.items()
+        if term not in overlay.suppress_negative
+    }
+    positive.update(overlay.positive)
+    negative.update(overlay.negative)
+    return _compile(positive), _compile(negative)
 
 # Negators flip the polarity of the term that follows them. Word-bounded: a bare
 # "not" substring also lives inside "another", "notable" and "nothing", which
@@ -322,10 +454,10 @@ def _is_negated(text: str, match_start: int) -> bool:
 class LexiconAnalyzer:
     """Keyword scorer tuned for pharma and life-sciences headlines."""
 
-    model_version = "lexicon-v2"
+    model_version = "lexicon-v3"
 
     @staticmethod
-    def _tally(text: str) -> tuple[float, float, int]:
+    def _tally(text: str, sector_group: str | None = None) -> tuple[float, float, int]:
         """Sum positive and negative weight over every occurrence in ``text``.
 
         Each occurrence is negation-checked on its own, so "did not meet the
@@ -334,10 +466,11 @@ class LexiconAnalyzer:
         """
         positive = negative = 0.0
         hits = 0
+        positive_patterns, negative_patterns = _patterns_for(sector_group)
 
         for patterns, is_positive in (
-            (_POSITIVE_PATTERNS, True),
-            (_NEGATIVE_PATTERNS, False),
+            (positive_patterns, True),
+            (negative_patterns, False),
         ):
             for pattern, weight in patterns:
                 occurrences = 0
@@ -354,13 +487,16 @@ class LexiconAnalyzer:
 
         return positive, negative, hits
 
-    def explain(self, headline: str, body: str | None = None) -> dict:
+    def explain(
+        self, headline: str, body: str | None = None, sector_group: str | None = None
+    ) -> dict:
         """Which terms fired and how — for tuning the lexicon against real news."""
         text = _prepare(headline, body).lower()
         matched: list[dict] = []
+        positive_patterns, negative_patterns = _patterns_for(sector_group)
         for patterns, is_positive in (
-            (_POSITIVE_PATTERNS, True),
-            (_NEGATIVE_PATTERNS, False),
+            (positive_patterns, True),
+            (negative_patterns, False),
         ):
             for pattern, weight in patterns:
                 for match in pattern.finditer(text):
@@ -374,20 +510,23 @@ class LexiconAnalyzer:
                             "negated": negated,
                         }
                     )
-        result = self.score(headline, body)
+        result = self.score(headline, body, sector_group)
         return {
             "sentiment": result.sentiment.value,
             "score": result.score,
             "confidence": result.confidence,
+            "sector_group": sector_group,
             "matches": matched,
         }
 
-    def score(self, headline: str, body: str | None = None) -> SentimentResult:
+    def score(
+        self, headline: str, body: str | None = None, sector_group: str | None = None
+    ) -> SentimentResult:
         text = _prepare(headline, body).lower()
         if not text:
             return SentimentResult(Sentiment.NEUTRAL, 0.0, 0.0, self.model_version)
 
-        positive, negative, hits = self._tally(text)
+        positive, negative, hits = self._tally(text, sector_group)
         total = positive + negative
         if total == 0:
             return SentimentResult(Sentiment.NEUTRAL, 0.0, 0.25, self.model_version)
@@ -423,7 +562,12 @@ class FinBertAnalyzer:
             )
         return self._pipeline
 
-    def score(self, headline: str, body: str | None = None) -> SentimentResult:
+    def score(
+        self, headline: str, body: str | None = None, sector_group: str | None = None
+    ) -> SentimentResult:
+        # FinBERT learned its own vocabulary from a general financial corpus and
+        # has no sector switch to set, so the argument is accepted for interface
+        # parity and deliberately unused rather than faked.
         text = _prepare(headline, body)
         if not text:
             return SentimentResult(Sentiment.NEUTRAL, 0.0, 0.0, self.model_version)
@@ -464,10 +608,17 @@ class SentimentAnalyzer:
     def model_version(self) -> str:
         return self._backend.model_version
 
-    def analyze_sentiment(self, headline: str, body: str | None = None) -> SentimentResult:
-        """Score one article. Never raises: a backend failure degrades to neutral."""
+    def analyze_sentiment(
+        self, headline: str, body: str | None = None, sector_group: str | None = None
+    ) -> SentimentResult:
+        """Score one article. Never raises: a backend failure degrades to neutral.
+
+        ``sector_group`` selects the lexicon overlay — see ``_OVERLAYS``. Omit it
+        and the base pharma lexicon applies, which is the correct default for an
+        unmapped symbol and the historical behaviour for every other one.
+        """
         try:
-            return self._backend.score(headline, body)
+            return self._backend.score(headline, body, sector_group)
         except Exception:  # pragma: no cover - defensive, keeps ingestion alive
             logger.exception("Sentiment scoring failed; recording neutral")
             return SentimentResult(Sentiment.NEUTRAL, 0.0, 0.0, f"{self.model_version}+error")
