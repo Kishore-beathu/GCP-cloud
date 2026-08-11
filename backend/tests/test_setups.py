@@ -497,3 +497,33 @@ async def test_the_prior_close_excludes_the_session_being_scanned(
     body = (await client.get(f"/setups?ticker={stock.ticker}")).json()
 
     assert body["signals"], "the prior close was taken from the session being scanned"
+
+
+def test_each_setup_runs_as_early_as_its_own_indicators_allow():
+    """A round-number floor rejected setups the plan expects to be live.
+
+    The plan runs L2 and S1 from 10:00 ET — thirty minutes after the open, six
+    five-minute bars — but a flat 12-bar minimum delayed everything to 10:30.
+    The floor is now whatever each setup's indicators need, so this pins that
+    those needs are actually met at the stated minimum rather than the number
+    merely being smaller.
+    """
+    for key, evaluate in setups.SETUPS.items():
+        minimum = setups.MIN_BARS[key]
+        session = [bar(index * 5, 100.0 + index * 0.1) for index in range(minimum)]
+
+        evaluation = evaluate("MU", session, 100.0)
+
+        assert "enough bars" not in evaluation.failed, (
+            f"{key} needs more than the {minimum} bars MIN_BARS claims"
+        )
+
+
+def test_the_bar_shortfall_says_how_many_are_needed():
+    """"11 bars" alone does not tell you whether to wait or to give up."""
+    short = [bar(index * 5, 100.0) for index in range(3)]
+
+    evaluation = setups.vwap_bounce("MU", short)
+
+    detail = next(c.detail for c in evaluation.checks if c.name == "enough bars")
+    assert str(setups.MIN_BARS["L2"]) in detail

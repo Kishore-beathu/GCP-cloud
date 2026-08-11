@@ -49,6 +49,18 @@ EXHAUSTION_WICK = 0.5
 # failed breakout fails at is what the session established before them.
 ATTEMPT_BARS = 6
 
+# Each setup's minimum session length, derived from what its indicators need
+# rather than picked as a round number. A round 12 delayed every setup to an
+# hour after the open, while the plan runs L2 and S1 from 10:00 ET — thirty
+# minutes in, six bars — so the floor was rejecting setups the specification
+# expected to be live.
+#
+#   L1  an opening range, a pullback, and a bar reclaiming it.
+#   L2  the 9-EMA is binding; the pullback window needs four bars after it.
+#   S1  ATTEMPT_BARS of attempt, plus enough before them to establish a level.
+#   S2  a swing high needs 2*lookback+1 bars, plus bars after it to roll over.
+MIN_BARS = {"L1": 6, "L2": 9, "S1": 10, "S2": 10}
+
 
 @dataclass(frozen=True)
 class Check:
@@ -224,8 +236,15 @@ def dip_and_rip(
     session = intraday.session_bars(bars)
     checks: list[Check] = []
 
-    if len(session) < 6 or previous_close is None:
-        checks.append(_check("enough bars", False, f"{len(session)} bars this session"))
+    if len(session) < MIN_BARS["L1"] or previous_close is None:
+        checks.append(
+            _check(
+                "enough bars",
+                False,
+                f"{len(session)} bars this session, needs {MIN_BARS['L1']}"
+                + ("" if previous_close is not None else "; no stored prior close"),
+            )
+        )
         return Evaluation(setup=setup, ticker=ticker, signal=None, checks=checks)
 
     last = session[-1]
@@ -312,8 +331,14 @@ def vwap_bounce(ticker: str, bars: list[Bar], previous_close: float | None = Non
     session = intraday.session_bars(bars)
     checks: list[Check] = []
 
-    if len(session) < 12:
-        checks.append(_check("enough bars", False, f"{len(session)} bars this session"))
+    if len(session) < MIN_BARS["L2"]:
+        checks.append(
+            _check(
+                "enough bars",
+                False,
+                f"{len(session)} bars this session, needs {MIN_BARS['L2']}",
+            )
+        )
         return Evaluation(setup=setup, ticker=ticker, signal=None, checks=checks)
 
     last = session[-1]
@@ -397,8 +422,14 @@ def failed_breakout(
     session = intraday.session_bars(bars)
     checks: list[Check] = []
 
-    if len(session) < 12:
-        checks.append(_check("enough bars", False, f"{len(session)} bars this session"))
+    if len(session) < MIN_BARS["S1"]:
+        checks.append(
+            _check(
+                "enough bars",
+                False,
+                f"{len(session)} bars this session, needs {MIN_BARS['S1']}",
+            )
+        )
         return Evaluation(setup=setup, ticker=ticker, signal=None, checks=checks)
 
     last = session[-1]
@@ -504,8 +535,14 @@ def parabolic_short(
     session = intraday.session_bars(bars)
     checks: list[Check] = []
 
-    if len(session) < 12:
-        checks.append(_check("enough bars", False, f"{len(session)} bars this session"))
+    if len(session) < MIN_BARS["S2"]:
+        checks.append(
+            _check(
+                "enough bars",
+                False,
+                f"{len(session)} bars this session, needs {MIN_BARS['S2']}",
+            )
+        )
         return Evaluation(setup=setup, ticker=ticker, signal=None, checks=checks)
 
     last = session[-1]
