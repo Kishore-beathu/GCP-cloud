@@ -152,3 +152,85 @@ async def test_fetch_feed_returns_empty_on_a_network_error():
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
         assert await fetch_feed(client, "https://nowhere.invalid/rss") == []
+
+
+# --- Article links ------------------------------------------------------------
+# A stored non-URL rendered as <a href="yahoo-a1b2c3">, which the browser
+# resolved against our own origin: clicking a headline kept the reader on the
+# dashboard instead of opening the article.
+
+
+def test_a_link_is_preferred_over_a_guid_that_appears_first():
+    """Most RSS emits <guid> before <link>, and the guid is not a URL.
+
+    The parser scanned the children once and took whichever of the two tags
+    turned up first, so the result depended on the feed's element order rather
+    than on the caller's preference order.
+    """
+    xml = """<rss><channel><item>
+      <guid isPermaLink="false">yahoo-a1b2c3</guid>
+      <title>Chip demand climbs</title>
+      <link>https://finance.yahoo.com/news/chip-demand.html</link>
+      <pubDate>Mon, 10 Aug 2026 09:00:00 GMT</pubDate>
+    </item></channel></rss>"""
+
+    entry = parse_feed(xml)[0]
+
+    assert entry.link == "https://finance.yahoo.com/news/chip-demand.html"
+    # The guid is still worth keeping as the dedup identifier.
+    assert entry.identifier == "yahoo-a1b2c3"
+
+
+def test_a_non_permalink_guid_is_never_used_as_the_url():
+    """isPermaLink="false" is the feed saying so in as many words."""
+    xml = """<rss><channel><item>
+      <guid isPermaLink="false">yahoo-a1b2c3</guid>
+      <title>No link at all</title>
+      <pubDate>Mon, 10 Aug 2026 09:00:00 GMT</pubDate>
+    </item></channel></rss>"""
+
+    assert parse_feed(xml) == []
+
+
+def test_a_permalink_guid_is_used_when_there_is_no_link():
+    """Plenty of feeds carry the URL only in the guid, and that is fine."""
+    xml = """<rss><channel><item>
+      <guid isPermaLink="true">https://wire.example.com/story/1</guid>
+      <title>Release</title>
+      <pubDate>Mon, 10 Aug 2026 09:00:00 GMT</pubDate>
+    </item></channel></rss>"""
+
+    assert parse_feed(xml)[0].link == "https://wire.example.com/story/1"
+
+
+def test_a_relative_link_is_rejected_rather_than_stored():
+    """It would resolve against the dashboard's own origin and go nowhere."""
+    xml = """<rss><channel><item>
+      <title>Relative</title><link>/news/story-1</link>
+      <pubDate>Mon, 10 Aug 2026 09:00:00 GMT</pubDate>
+    </item></channel></rss>"""
+
+    assert parse_feed(xml) == []
+
+
+def test_atom_prefers_the_alternate_link_over_self():
+    """Atom repeats <link>; only rel="alternate" is the article itself."""
+    xml = """<feed xmlns="http://www.w3.org/2005/Atom"><entry>
+      <title>Filing</title>
+      <link rel="self" href="https://sec.gov/feed/self"/>
+      <link rel="alternate" href="https://sec.gov/filing/1"/>
+      <updated>2026-08-10T09:00:00Z</updated>
+    </entry></feed>"""
+
+    assert parse_feed(xml)[0].link == "https://sec.gov/filing/1"
+
+
+def test_an_atom_link_without_rel_is_still_the_article():
+    """rel defaults to alternate when the attribute is absent."""
+    xml = """<feed xmlns="http://www.w3.org/2005/Atom"><entry>
+      <title>Filing</title>
+      <link href="https://sec.gov/filing/2"/>
+      <updated>2026-08-10T09:00:00Z</updated>
+    </entry></feed>"""
+
+    assert parse_feed(xml)[0].link == "https://sec.gov/filing/2"

@@ -13,9 +13,9 @@ channel would be worse than useless.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import NewsArticle, SentimentScore, Stock
@@ -118,4 +118,66 @@ async def rescore_articles(
 
     await db.commit()
     logger.info("Re-score complete: %s", report.as_dict())
+    return report
+
+
+@dataclass
+class LinkRepairReport:
+    """What a link repair pass found, and what it did about it."""
+
+    examined: int = 0
+    unusable: int = 0
+    deleted: int = 0
+    samples: list[str] = field(default_factory=list)
+
+    def as_dict(self) -> dict:
+        return {
+            "examined": self.examined,
+            "unusable": self.unusable,
+            "deleted": self.deleted,
+            "samples": self.samples,
+        }
+
+
+async def repair_article_links(
+    db: AsyncSession, apply: bool = False, limit: int = 20
+) -> LinkRepairReport:
+    """Find articles whose stored URL is not a URL, and optionally drop them.
+
+    The feed parser used to accept a non-permalink ``<guid>`` as the article
+    link, so rows exist carrying opaque vendor ids. Rendered as an ``href``
+    those resolve against the dashboard's own origin, and clicking the
+    headline goes nowhere. The parser no longer stores them; this clears the
+    ones already written.
+
+    Deleting rather than patching: the correct URL is not recoverable from an
+    opaque id, and the next ingest of that feed will re-add the story with a
+    working link. Sentiment scores follow via ``ON DELETE CASCADE``, and other
+    articles pointing at a deleted one as their duplicate primary have the
+    pointer set to NULL rather than being orphaned.
+
+    Defaults to a dry run, because "delete some of the news" should be a
+    decision rather than a side effect of asking a question.
+    """
+    report = LinkRepairReport()
+
+    rows = (await db.execute(select(NewsArticle.id, NewsArticle.url))).all()
+    report.examined = len(rows)
+
+    unusable = [
+        (article_id, url)
+        for article_id, url in rows
+        if not (url or "").lower().startswith(("http://", "https://"))
+    ]
+    report.unusable = len(unusable)
+    report.samples = [url for _, url in unusable[:limit]]
+
+    if apply and unusable:
+        await db.execute(
+            delete(NewsArticle).where(NewsArticle.id.in_([i for i, _ in unusable]))
+        )
+        await db.commit()
+        report.deleted = len(unusable)
+        logger.info("Deleted %d articles with unusable links", report.deleted)
+
     return report

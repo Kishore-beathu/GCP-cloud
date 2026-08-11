@@ -24,7 +24,7 @@ from app.integrations.yahoo_news import ingest_yahoo_news
 from app.integrations.yahoo import count_unpriced, update_yahoo_prices
 from app.schemas import HealthResponse
 from app.security import require_auth
-from app.services.rescore import rescore_articles, stale_count
+from app.services.rescore import repair_article_links, rescore_articles, stale_count
 from app.services.tickers import seed_stocks, tickers_in_group
 
 logger = logging.getLogger(__name__)
@@ -353,6 +353,28 @@ async def diagnose_sentiment(
     from app.services.diagnostics import probe_sentiment_distribution
 
     return await probe_sentiment_distribution(db, days)
+
+
+@router.post(
+    "/admin/news/repair-links",
+    summary="Find (and optionally drop) articles whose stored URL is not a URL",
+    dependencies=[Depends(require_auth)],
+)
+async def repair_links(
+    apply: bool = Query(
+        default=False,
+        description="False reports what would be deleted; True deletes it",
+    ),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Clear rows the old feed parser wrote with a guid in place of a link.
+
+    Dry run by default. The correct URL cannot be recovered from an opaque
+    vendor id, so the fix is to delete and let the next ingest re-add the
+    story with a working link.
+    """
+    report = await repair_article_links(db, apply=apply)
+    return report.as_dict()
 
 
 @router.get(

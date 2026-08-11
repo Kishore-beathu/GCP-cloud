@@ -75,6 +75,13 @@ def _configure_sqlite(engine: AsyncEngine) -> None:
             cursor.execute("PRAGMA journal_mode=WAL")
             cursor.execute("PRAGMA synchronous=NORMAL")
             cursor.execute("PRAGMA busy_timeout=15000")
+            # Off by default in SQLite, which silently ignores every ON DELETE
+            # clause in the schema. Deleting an article left its sentiment
+            # score behind, and left any syndicated copy pointing at a row
+            # that no longer existed — permanently excluded from scoring as a
+            # duplicate of nothing. Postgres enforces these already, so
+            # without this the two backends disagree about what a delete does.
+            cursor.execute("PRAGMA foreign_keys=ON")
         finally:
             cursor.close()
 

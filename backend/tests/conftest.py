@@ -40,6 +40,12 @@ async def engine():
         connect_args={"check_same_thread": False},
         poolclass=StaticPool,
     )
+    # The same PRAGMAs the app sets. Without this the tests ran with foreign
+    # keys disabled while production had them on, so no test could ever
+    # observe an ON DELETE clause doing — or failing to do — its job.
+    from app.database import _configure_sqlite
+
+    _configure_sqlite(engine)
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     try:

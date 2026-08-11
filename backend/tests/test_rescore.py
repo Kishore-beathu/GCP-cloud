@@ -5,10 +5,10 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from app.models import NewsArticle, SentimentScore
-from app.services.rescore import rescore_articles, stale_count
+from app.services.rescore import repair_article_links, rescore_articles, stale_count
 from app.services.sentiment import get_analyzer
 
 pytestmark = pytest.mark.asyncio
@@ -108,3 +108,95 @@ async def test_rescore_does_not_fire_alerts(db, seeded_stocks, client):
 
     history = await client.get("/alerts/history")
     assert history.json() == []
+
+
+# --- Link repair --------------------------------------------------------------
+
+
+async def _article(db, stock, url: str, index: int = 0):
+    from datetime import datetime, timezone
+
+    article = NewsArticle(
+        ticker_id=stock.id,
+        headline=f"Story {index}",
+        source="yahoo_news",
+        url=url,
+        published_at=datetime.now(timezone.utc),
+    )
+    db.add(article)
+    await db.commit()
+    await db.refresh(article)
+    return article
+
+
+@pytest.mark.asyncio
+async def test_repair_reports_unusable_links_without_deleting_by_default(db, seeded_stocks):
+    """"Delete some of the news" must be a decision, not a side effect."""
+    stock = seeded_stocks[0]
+    await _article(db, stock, "yahoo-a1b2c3", 0)
+    await _article(db, stock, "https://finance.yahoo.com/news/real.html", 1)
+
+    report = await repair_article_links(db)
+
+    assert report.examined == 2
+    assert report.unusable == 1
+    assert report.deleted == 0
+    assert report.samples == ["yahoo-a1b2c3"]
+    assert (await db.execute(select(func.count(NewsArticle.id)))).scalar_one() == 2
+
+
+@pytest.mark.asyncio
+async def test_repair_deletes_only_the_unusable_rows_when_applied(db, seeded_stocks):
+    stock = seeded_stocks[0]
+    await _article(db, stock, "yahoo-a1b2c3", 0)
+    await _article(db, stock, "/news/relative", 1)
+    kept = await _article(db, stock, "https://finance.yahoo.com/news/real.html", 2)
+
+    report = await repair_article_links(db, apply=True)
+
+    assert report.deleted == 2
+    remaining = (await db.execute(select(NewsArticle.id))).scalars().all()
+    assert remaining == [kept.id]
+
+
+@pytest.mark.asyncio
+async def test_repair_takes_the_sentiment_score_with_it(db, seeded_stocks):
+    """An orphaned score would keep counting toward the sentiment pillar."""
+    stock = seeded_stocks[0]
+    article = await _article(db, stock, "yahoo-a1b2c3", 0)
+    db.add(
+        SentimentScore(
+            article_id=article.id,
+            sentiment="positive",
+            score=0.9,
+            confidence=0.8,
+            event_type="other",
+            event_confidence=0.5,
+            model_version="test",
+        )
+    )
+    await db.commit()
+
+    await repair_article_links(db, apply=True)
+
+    assert (await db.execute(select(func.count(SentimentScore.id)))).scalar_one() == 0
+
+
+@pytest.mark.asyncio
+async def test_a_syndicated_copy_is_released_when_its_primary_is_deleted(db, seeded_stocks):
+    """Otherwise the copy points at a row that no longer exists.
+
+    A duplicate is excluded from scoring by having a non-NULL duplicate_of_id.
+    Left dangling it would stay excluded forever — a duplicate of nothing,
+    invisible to the sentiment pillar with no way to notice.
+    """
+    stock = seeded_stocks[0]
+    primary = await _article(db, stock, "yahoo-a1b2c3", 0)
+    copy = await _article(db, stock, "https://wire.example.com/copy", 1)
+    copy.duplicate_of_id = primary.id
+    await db.commit()
+
+    await repair_article_links(db, apply=True)
+    await db.refresh(copy)
+
+    assert copy.duplicate_of_id is None

@@ -49,8 +49,18 @@ def _local(tag: str) -> str:
 
 
 def _text(element: ElementTree.Element, *names: str) -> str | None:
-    for child in element:
-        if _local(child.tag) in names:
+    """First non-empty child matching ``names``, in the order ``names`` gives.
+
+    The order is the caller's preference order, so each name is searched
+    across all children before the next name is tried. Scanning the children
+    once and taking whichever tag turned up first instead made the result
+    depend on the feed's element order: ``("link", "guid")`` returned the guid
+    whenever the feed happened to emit ``<guid>`` first, which most RSS does.
+    """
+    for name in names:
+        for child in element:
+            if _local(child.tag) != name:
+                continue
             if child.text and child.text.strip():
                 return child.text.strip()
             # Atom puts the URL in an attribute rather than in the text.
@@ -58,6 +68,43 @@ def _text(element: ElementTree.Element, *names: str) -> str | None:
             if href:
                 return href.strip()
     return None
+
+
+def _link(element: ElementTree.Element) -> str | None:
+    """The entry's article URL, or None when it has nothing usable.
+
+    A guid is only a URL when the feed says so. RSS marks the difference with
+    ``isPermaLink="false"``, and Yahoo uses that for an opaque internal id --
+    which, stored as the article's URL, rendered as a *relative* href and left
+    the reader on the dashboard when they clicked it.
+    """
+    for child in element:
+        if _local(child.tag) != "link":
+            continue
+        # Atom repeats <link> with rel="self"/"edit"/"replies"; the article
+        # itself is rel="alternate", which is also the default when absent.
+        if child.attrib.get("rel", "alternate") != "alternate":
+            continue
+        candidate = (child.text or "").strip() or child.attrib.get("href", "").strip()
+        if _is_url(candidate):
+            return candidate
+
+    for name in ("guid", "id"):
+        for child in element:
+            if _local(child.tag) != name:
+                continue
+            if child.attrib.get("isPermaLink", "").lower() == "false":
+                continue
+            candidate = (child.text or "").strip()
+            if _is_url(candidate):
+                return candidate
+    return None
+
+
+def _is_url(value: str | None) -> bool:
+    """Absolute http(s) only — a relative path would resolve against our own
+    origin and navigate the reader nowhere."""
+    return bool(value) and value.lower().startswith(("http://", "https://"))
 
 
 def parse_datetime(value: str | None) -> datetime | None:
@@ -154,7 +201,7 @@ def parse_feed_with_report(xml: str) -> tuple[list[FeedEntry], ParseReport]:
             report.dropped_no_title += 1
             continue
 
-        link = _text(element, "link", "guid", "id")
+        link = _link(element)
         if not link:
             report.dropped_no_link += 1
             continue

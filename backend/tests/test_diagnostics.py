@@ -314,7 +314,7 @@ async def test_feed_probe_distinguishes_an_empty_channel_from_dropped_items():
 
     # Items present, but every date is in a format nothing recognises.
     unreadable = """<rss version="2.0"><channel>
-      <item><title>A</title><link>u1</link><pubDate>10/08/2026 09:00</pubDate></item>
+      <item><title>A</title><link>https://e.com/a</link><pubDate>10/08/2026 09:00</pubDate></item>
     </channel></rss>"""
     async with client_returning(httpx.Response(200, text=unreadable)) as client:
         dropped = await probe_feed(client, "wire", "https://e.com/rss", index)
