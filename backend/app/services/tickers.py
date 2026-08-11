@@ -75,7 +75,10 @@ SEED_TICKERS: tuple[TickerSeed, ...] = (
     TickerSeed("MEDP", "Medpace Holdings", "cro", "NASDAQ"),
     TickerSeed("FTRE", "Fortrea Holdings Inc.", "cro", "NASDAQ"),
     TickerSeed("CERT", "Certara Inc.", "cro", "NASDAQ"),
-    TickerSeed("NOTV", "Inotiv Inc.", "cro", "NASDAQ"),
+    # Inotiv (NOTV) was seeded here and removed: it filed Chapter 11 in June
+    # 2026, moved to NOTVQ, and trades around a $0.6M market cap. Left as a
+    # note rather than deleted silently, because a preclinical CRO vanishing
+    # from the cohort otherwise looks like an oversight.
     # --- Artificial intelligence ---------------------------------------------
     # Platform and model owners.
     TickerSeed("NVDA", "NVIDIA Corporation", "ai_semiconductor", "NASDAQ"),
