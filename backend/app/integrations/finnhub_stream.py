@@ -28,6 +28,23 @@ import logging
 from datetime import datetime, timezone
 
 import websockets
+from websockets.exceptions import InvalidStatus
+
+# A refused handshake with one of these is about the credential, not about
+# timing. Reconnecting cannot fix it and every attempt spends quota, so the
+# stream stops and says why — the same rule the REST client already follows.
+_FATAL_HANDSHAKE_STATUSES = frozenset({401, 403})
+
+
+def _retry_after(exc: InvalidStatus) -> float | None:
+    """The vendor's own Retry-After, in seconds, when it sent a usable one."""
+    raw = exc.response.headers.get("Retry-After")
+    try:
+        return float(raw) if raw else None
+    except (TypeError, ValueError):
+        # The header also permits an HTTP date. Falling back to our own
+        # default beats parsing a date to wait an unknown length of time.
+        return None
 from sqlalchemy import select
 from websockets.exceptions import ConnectionClosed
 
@@ -135,6 +152,35 @@ class FinnhubStream:
                     )
             except asyncio.CancelledError:
                 raise
+            except InvalidStatus as exc:
+                # The handshake was answered and refused. Why it was refused
+                # decides what to do next, and treating every refusal the same
+                # meant a rate limit was retried from a two-second backoff --
+                # which is what produced the rate limit -- and a bad key was
+                # retried forever.
+                status = exc.response.status_code
+                if status in _FATAL_HANDSHAKE_STATUSES:
+                    logger.error(
+                        "Finnhub stream rejected the token (HTTP %s); "
+                        "not retrying. Check FINNHUB_API_KEY.",
+                        status,
+                    )
+                    self._running = False
+                    self._connected = False
+                    break
+                if status == 429:
+                    # Honour the vendor's own number when it sends one, rather
+                    # than guessing at the interval it just told us was wrong.
+                    backoff = max(
+                        backoff,
+                        _retry_after(exc) or settings.finnhub_stream_rate_limit_backoff_seconds,
+                    )
+                    logger.warning(
+                        "Finnhub stream rate limited (HTTP 429); next attempt in %.0fs",
+                        backoff,
+                    )
+                else:
+                    logger.warning("Finnhub stream refused with HTTP %s", status)
             except (ConnectionClosed, OSError) as exc:
                 logger.warning("Finnhub stream disconnected: %s", exc)
             except Exception:  # noqa: BLE001 - streaming must never kill the app

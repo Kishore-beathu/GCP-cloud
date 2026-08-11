@@ -8,6 +8,7 @@ exercised rather than mocked away.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 
 import pytest
@@ -299,3 +300,94 @@ async def test_price_push_job_skips_streamed_symbols(
 
     # MRNA is streamed, so only PFE may be polled (and only if it has prices).
     assert "MRNA" not in pushed
+
+
+# --- Refused handshakes -------------------------------------------------------
+# A rejected handshake was caught by the catch-all, which logged a traceback for
+# a routine rate limit and reconnected from the same two-second backoff whatever
+# the reason — so a 429 was answered by the behaviour that caused it, and a bad
+# key was retried forever.
+
+
+def _rejecting_server(status: int, headers: dict[str, str] | None = None):
+    """A server that refuses the WebSocket upgrade with a given HTTP status."""
+    from http import HTTPStatus
+
+    def process_request(connection, request):
+        return connection.respond(HTTPStatus(status), "nope\n")
+
+    async def handler(connection):  # pragma: no cover - never reached
+        await connection.wait_closed()
+
+    return handler, process_request
+
+
+@pytest.mark.asyncio
+async def test_a_rate_limited_handshake_waits_far_longer_than_the_normal_backoff(
+    monkeypatch, caplog
+):
+    """Reconnecting two seconds after a 429 is what sustains the 429."""
+    handler, process_request = _rejecting_server(429)
+
+    async with websockets.serve(
+        handler, "127.0.0.1", 0, process_request=process_request
+    ) as server:
+        port = server.sockets[0].getsockname()[1]
+
+        monkeypatch.setenv("FINNHUB_API_KEY", "test-key")
+        monkeypatch.setenv("FINNHUB_STREAM_RATE_LIMIT_BACKOFF_SECONDS", "45")
+        get_settings.cache_clear()
+        monkeypatch.setattr("app.integrations.finnhub_stream.WS_URL", f"ws://127.0.0.1:{port}")
+
+        slept: list[float] = []
+
+        async def _record_sleep(seconds):
+            slept.append(seconds)
+            raise asyncio.CancelledError  # stop after the first backoff
+
+        monkeypatch.setattr(asyncio, "sleep", _record_sleep)
+
+        stream = FinnhubStream()
+        stream._load_reference_closes = _noop  # type: ignore[method-assign]
+        stream._running = True
+        with contextlib.suppress(asyncio.CancelledError):
+            await stream._run()
+
+    assert slept == [45.0], "a 429 must not be retried on the ordinary backoff"
+    assert "rate limited" in caplog.text.lower()
+    # A traceback for a documented vendor response is noise, not a diagnosis.
+    assert "Traceback" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_a_rejected_token_stops_the_stream_instead_of_retrying(monkeypatch, caplog):
+    """Reconnecting cannot fix a wrong key, and every attempt spends quota."""
+    handler, process_request = _rejecting_server(401)
+
+    async with websockets.serve(
+        handler, "127.0.0.1", 0, process_request=process_request
+    ) as server:
+        port = server.sockets[0].getsockname()[1]
+
+        monkeypatch.setenv("FINNHUB_API_KEY", "wrong-key")
+        get_settings.cache_clear()
+        monkeypatch.setattr("app.integrations.finnhub_stream.WS_URL", f"ws://127.0.0.1:{port}")
+
+        attempts = 0
+        original_connect = websockets.connect
+
+        def counting_connect(*args, **kwargs):
+            nonlocal attempts
+            attempts += 1
+            return original_connect(*args, **kwargs)
+
+        monkeypatch.setattr(websockets, "connect", counting_connect)
+
+        stream = FinnhubStream()
+        stream._load_reference_closes = _noop  # type: ignore[method-assign]
+        stream._running = True
+        await asyncio.wait_for(stream._run(), timeout=5)
+
+    assert attempts == 1
+    assert stream.status()["enabled"] is False
+    assert "FINNHUB_API_KEY" in caplog.text

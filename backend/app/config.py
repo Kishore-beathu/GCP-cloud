@@ -217,6 +217,10 @@ class Settings(BaseSettings):
     finnhub_stream_resync_seconds: float = 5.0
     finnhub_stream_backoff_seconds: float = 2.0
     finnhub_stream_max_backoff_seconds: float = 60.0
+    # Used instead of the ordinary backoff after an HTTP 429, and only when the
+    # vendor does not send a Retry-After of its own. Reconnecting two seconds
+    # after being told to slow down is what sustains a rate limit.
+    finnhub_stream_rate_limit_backoff_seconds: float = 60.0
 
     # --- Notification channels ----------------------------------------------
     # Each channel activates only when configured; alerts naming an
