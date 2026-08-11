@@ -66,10 +66,16 @@ SEED_TICKERS: tuple[TickerSeed, ...] = (
     TickerSeed("WAT", "Waters Corporation", "life_science_tools", "NYSE"),
     TickerSeed("RVTY", "Revvity Inc.", "life_science_tools", "NYSE"),
     TickerSeed("WST", "West Pharmaceutical Services", "cdmo", "NYSE"),
-    TickerSeed("CRL", "Charles River Laboratories", "cdmo", "NYSE"),
+    # Charles River is the largest preclinical CRO; "cdmo" described what it
+    # sells least. Both sectors sit in the same group, so this changes how it
+    # is labelled and ranked within the CRO cohort, not which group it is in.
+    TickerSeed("CRL", "Charles River Laboratories", "cro", "NYSE"),
     TickerSeed("IQV", "IQVIA Holdings Inc.", "cro", "NYSE"),
     TickerSeed("ICLR", "ICON plc", "cro", "NASDAQ"),
     TickerSeed("MEDP", "Medpace Holdings", "cro", "NASDAQ"),
+    TickerSeed("FTRE", "Fortrea Holdings Inc.", "cro", "NASDAQ"),
+    TickerSeed("CERT", "Certara Inc.", "cro", "NASDAQ"),
+    TickerSeed("NOTV", "Inotiv Inc.", "cro", "NASDAQ"),
     # --- Artificial intelligence ---------------------------------------------
     # Platform and model owners.
     TickerSeed("NVDA", "NVIDIA Corporation", "ai_semiconductor", "NASDAQ"),
@@ -224,6 +230,27 @@ SEED_TICKERS: tuple[TickerSeed, ...] = (
     TickerSeed("DRREDDY.NS", "Dr. Reddy's Laboratories", "pharma"),
     TickerSeed("CIPLA.NS", "Cipla Ltd.", "pharma"),
     TickerSeed("CSL.AX", "CSL Limited", "biotech"),
+    # --- Contract research organisations, non-US listings -------------------
+    # The CRO cohort was four names, all but one US-listed, while most of the
+    # industry's capacity is in Asia. Chinese CROs are listed twice on purpose:
+    # the A-share and the H-share trade on different sessions and in different
+    # currencies, and the matcher indexes several symbols per company name so
+    # both lines receive the same news rather than only the one that happened
+    # to be indexed.
+    TickerSeed("2309.T", "CMIC Holdings Co.", "cro"),
+    TickerSeed("2395.T", "Shin Nippon Biomedical Laboratories", "cro"),
+    TickerSeed("300347.SZ", "Hangzhou Tigermed Consulting Co.", "cro"),
+    TickerSeed("3347.HK", "Hangzhou Tigermed Consulting Co.", "cro"),
+    TickerSeed("300759.SZ", "Pharmaron Beijing Co.", "cro"),
+    TickerSeed("3759.HK", "Pharmaron Beijing Co.", "cro"),
+    TickerSeed("603127.SS", "Joinn Laboratories (China) Co.", "cro"),
+    TickerSeed("6127.HK", "Joinn Laboratories (China) Co.", "cro"),
+    TickerSeed("688202.SS", "Shanghai Medicilon Inc.", "cro"),
+    TickerSeed("1521.HK", "Frontage Holdings Corp.", "cro"),
+    # WuXi AppTec's A-share is already tracked above; this is its Hong Kong
+    # line, which is where its international news flow tends to land first.
+    TickerSeed("2359.HK", "WuXi AppTec Co.", "cro"),
+    TickerSeed("SYNGENE.NS", "Syngene International Ltd.", "cro"),
     # --- North America beyond the US ---------------------------------------
     TickerSeed("BHC.TO", "Bausch Health Companies", "pharma"),
     TickerSeed("CXR.TO", "Cardiol Therapeutics", "biotech"),

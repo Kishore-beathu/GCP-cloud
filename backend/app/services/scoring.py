@@ -531,12 +531,20 @@ def _spread(ranked: list[tuple[str, float]], forward: dict[str, float]) -> dict:
     """
     if len(ranked) < 10:
         return {"spread": None, "reason": "too_few_symbols", "symbols": len(ranked)}
-    if ranked[0][1] == ranked[-1][1]:
-        # Every symbol scored the same: the order is arbitrary and any spread
-        # would be an artefact of the sort, not a finding.
+
+    # Sort before testing for dispersion. This compared ranked[0] against
+    # ranked[-1] on the *unsorted* list, which is two arbitrary symbols rather
+    # than the range: whenever the first and last symbol in iteration order
+    # happened to tie — common once heavy ties exist, as they do in a sentiment
+    # factor where most articles score exactly zero — a perfectly rankable
+    # period was discarded as flat. It suppressed three of six sentiment
+    # periods here, and the pillar was judged on the half that survived.
+    ordered = sorted(ranked, key=lambda row: row[1], reverse=True)
+    if ordered[0][1] == ordered[-1][1]:
+        # Now genuinely every symbol scored the same: the order is arbitrary
+        # and any spread would be an artefact of the sort, not a finding.
         return {"spread": None, "reason": "no_dispersion", "symbols": len(ranked)}
 
-    ordered = sorted(ranked, key=lambda row: row[1], reverse=True)
     size = max(1, len(ordered) // 5)
     top = [forward[symbol] for symbol, _ in ordered[:size] if symbol in forward]
     bottom = [forward[symbol] for symbol, _ in ordered[-size:] if symbol in forward]
@@ -554,6 +562,12 @@ def _spread(ranked: list[tuple[str, float]], forward: dict[str, float]) -> dict:
         "bottom_mean": round(bottom_mean, 4),
         "spread": round(top_mean - bottom_mean, 4),
         "symbols": len(ordered),
+        # "Not all tied" is a weak thing to know. A factor with six distinct
+        # values across 150 symbols is ranking them into six blocks, and which
+        # members of a block land in the top quintile is still sort order — so
+        # report the count rather than leaving a pass/fail flag to imply the
+        # buckets were cleanly separated.
+        "distinct_scores": len({value for _, value in ordered}),
     }
 
 

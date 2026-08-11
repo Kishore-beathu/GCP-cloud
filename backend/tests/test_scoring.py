@@ -330,6 +330,38 @@ async def test_validation_refuses_to_rank_when_nothing_separates(db):
     assert result["status"] == "insufficient_history" or not result.get("summary")
 
 
+def test_dispersion_is_judged_on_the_range_not_on_two_arbitrary_symbols():
+    """Regression: the flatness check ran before the sort.
+
+    It compared the first and last entries of the *unsorted* ranking, so any
+    period whose first and last symbol in iteration order happened to tie was
+    discarded as flat. Heavy ties make that likely rather than exotic — in a
+    sentiment factor where most articles score exactly zero it suppressed
+    three of six periods, and the pillar was then judged on the half that
+    survived.
+    """
+    forward = {f"S{index:02d}": float(index) for index in range(12)}
+    # First and last tie; everything between them is spread wide.
+    ranked = [("S00", 50.0)] + [
+        (f"S{index:02d}", float(index) * 10) for index in range(1, 11)
+    ] + [("S11", 50.0)]
+
+    result = scoring._spread(ranked, forward)
+
+    assert result["spread"] is not None, "a rankable period was discarded as flat"
+    assert result["distinct_scores"] > 1
+
+
+def test_a_genuinely_flat_ranking_is_still_refused():
+    """The guard the sort-order bug was hiding behind still has to work."""
+    forward = {f"S{index:02d}": float(index) for index in range(12)}
+
+    result = scoring._spread([(symbol, 50.0) for symbol in forward], forward)
+
+    assert result["spread"] is None
+    assert result["reason"] == "no_dispersion"
+
+
 def test_an_unmeasurable_pillar_says_why_rather_than_returning_null():
     """"Could not measure" and "measured, found nothing" are different results.
 

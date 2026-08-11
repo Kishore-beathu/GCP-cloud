@@ -232,3 +232,41 @@ async def test_ingest_without_a_group_still_means_everything(client, seeded_stoc
 
     assert response.status_code == 202
     assert response.json()["symbols"] == "all active"
+
+
+def test_no_ticker_is_seeded_twice():
+    """A duplicate symbol would be inserted once and silently shadow the other."""
+    seen: set[str] = set()
+    duplicates = {seed.ticker for seed in SEED_TICKERS if seed.ticker in seen or seen.add(seed.ticker)}
+
+    assert duplicates == set()
+
+
+def test_the_cro_cohort_spans_the_regions_the_industry_actually_operates_in():
+    """Most contract research capacity is in Asia, not the US.
+
+    A CRO cohort of four US names would rank "the best CRO" against a sample
+    that excludes most of the industry.
+    """
+    cros = [seed for seed in SEED_TICKERS if seed.sector == "cro"]
+    suffixes = {seed.ticker.rpartition(".")[2] if "." in seed.ticker else "US" for seed in cros}
+
+    assert len(cros) >= 15
+    assert {"US", "T", "HK", "SZ", "SS", "NS"} <= suffixes
+    assert all(sectors.group_for(seed.sector) == "pharma_life_sciences" for seed in cros)
+
+
+def test_dual_listed_cros_share_one_company_name():
+    """The matcher indexes symbols by name, so both lines must agree on it.
+
+    A mismatched name would leave the H-share invisible to news matching while
+    the A-share collected everything, which reads as "no news for this symbol".
+    """
+    by_name: dict[str, set[str]] = {}
+    for seed in SEED_TICKERS:
+        if seed.sector == "cro":
+            by_name.setdefault(seed.company_name, set()).add(seed.ticker)
+
+    tigermed = by_name["Hangzhou Tigermed Consulting Co."]
+    assert tigermed == {"300347.SZ", "3347.HK"}
+    assert by_name["WuXi AppTec Co."] == {"603259.SS", "2359.HK"}
