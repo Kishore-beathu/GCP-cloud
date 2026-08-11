@@ -8,6 +8,8 @@ rather than letting a list of signals imply a track record it does not have.
 
 from __future__ import annotations
 
+import asyncio
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
@@ -25,10 +27,21 @@ router = APIRouter(prefix="/setups", tags=["setups"])
 # specified on.
 WINDOW = "1d"
 
-# Scanning the whole universe would be ~180 live requests per call. The setups
-# are specified for liquid US names, so the caller names a group or a handful
-# of symbols.
-MAX_SYMBOLS = 25
+# One live request per symbol, so the whole universe is ~180. That is fine
+# spread across a few connections and rude on one, hence the semaphore below
+# rather than a low cap that makes a universe-wide board impossible.
+MAX_SYMBOLS = 200
+
+# Concurrent fetches. Enough that 180 symbols finish in seconds; few enough to
+# stay a polite client of an endpoint nobody is paying for.
+FETCH_CONCURRENCY = 6
+
+# A session whose newest bar is older than this is not trading right now. Most
+# of this universe is listed in Asia or Europe, where the market is shut during
+# US hours — and the setups are specified for a live tape. Scoring a closed
+# market produces a signal nobody can act on, so those rows are marked and
+# excluded from signals unless asked for explicitly.
+STALE_AFTER_MINUTES = 30
 
 
 @router.get("", summary="Which intraday setups are triggering right now")
@@ -53,6 +66,9 @@ async def scan(
     ),
     include_failed: bool = Query(
         default=False, description="Also return setups that did not trigger, with reasons"
+    ),
+    include_stale: bool = Query(
+        default=False, description="Include symbols whose market is not trading now"
     ),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
@@ -86,26 +102,23 @@ async def scan(
 
     signals: list[dict] = []
     considered: list[dict] = []
-    unavailable: list[str] = []
 
     # Bars first, because the prior close depends on which session the bars
     # belong to — see _previous_closes.
-    sessions: dict[str, list] = {}
-    for index, symbol in enumerate(symbols):
-        try:
-            bars = await fetch_intraday(symbol, WINDOW)
-        except YahooUnavailable:
-            # One refusal means the rest of the batch will be refused too.
-            unavailable.extend(symbols[index:])
-            break
-        if not bars:
-            unavailable.append(symbol)
-            continue
-        sessions[symbol] = bars
-
+    sessions, unavailable = await _fetch_sessions(symbols)
     previous_closes = await _previous_closes(db, sessions)
 
+    stale: list[str] = []
     for symbol, bars in sessions.items():
+        # A group like data_storage spans Seoul, Taipei and Tokyo as well as
+        # New York. Those markets are shut during the US session, so their
+        # newest bar is yesterday's close and any signal from it is a trade
+        # nobody can take.
+        if _minutes_old(bars) > STALE_AFTER_MINUTES:
+            stale.append(symbol)
+            if not include_stale:
+                continue
+
         evaluations = (
             [setups.SETUPS[setup](symbol, bars, previous_closes.get(symbol))]
             if setup
@@ -126,8 +139,9 @@ async def scan(
                 considered.append(evaluation.as_dict())
 
     return {
-        "scanned": len(symbols) - len(unavailable),
+        "scanned": len(sessions) - (0 if include_stale else len(stale)),
         "unavailable": unavailable,
+        "stale_markets": stale,
         "window": WINDOW,
         "signals": signals,
         "considered": considered if include_failed else [],
@@ -135,7 +149,8 @@ async def scan(
             "Live conditions, not a forecast and not a track record. Intraday "
             "bars are fetched and never stored, so these setups cannot be run "
             "through GET /scores/validation the way the daily score is — their "
-            "hit rate on this universe is unmeasured. Levels come from the "
+            "hit rate on this universe is unmeasured. Symbols in stale_markets "
+            "are not trading right now and were skipped. Levels come from the "
             "chart; sizing assumes the stop is honoured."
         ),
     }
@@ -210,3 +225,145 @@ async def size(
     Separate from the scan because it is useful on a trade you found yourself.
     """
     return setups.position_size(account_equity, entry, stop, risk_fraction)
+
+
+async def _fetch_sessions(symbols: list[str]) -> tuple[dict[str, list], list[str]]:
+    """Intraday bars for many symbols, a few connections at a time.
+
+    Serially this took one round trip per symbol, which put a universe-wide
+    scan out of reach and forced a cap low enough that "all the stocks" was
+    not a question the endpoint could answer.
+    """
+    semaphore = asyncio.Semaphore(FETCH_CONCURRENCY)
+    refused = False
+
+    async def _one(symbol: str) -> tuple[str, list | None]:
+        nonlocal refused
+        if refused:
+            return symbol, None
+        async with semaphore:
+            try:
+                return symbol, await fetch_intraday(symbol, WINDOW)
+            except YahooUnavailable:
+                # A refusal applies to the client, not the symbol: the rest of
+                # the batch would be refused too, so stop asking.
+                refused = True
+                return symbol, None
+
+    results = await asyncio.gather(*(_one(symbol) for symbol in symbols))
+
+    sessions: dict[str, list] = {}
+    unavailable: list[str] = []
+    for symbol, bars in results:
+        if bars:
+            sessions[symbol] = bars
+        else:
+            unavailable.append(symbol)
+    return sessions, unavailable
+
+
+def _minutes_old(bars: list) -> float:
+    return (datetime.now(timezone.utc) - bars[-1].at).total_seconds() / 60
+
+
+@router.get("/board", summary="Every symbol's setup conditions, as a matrix")
+async def board(
+    ticker: list[str] | None = Query(default=None),
+    group: str | None = Query(default=None, description="Omit for the whole universe"),
+    setup: str | None = Query(default=None, description=f"One of {', '.join(setups.SETUPS)}"),
+    min_passed: int = Query(
+        default=0, ge=0, description="Only rows with at least this many conditions met"
+    ),
+    include_stale: bool = Query(
+        default=False, description="Include symbols whose market is not trading now"
+    ),
+    limit: int = Query(default=40, ge=1, le=500),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """The same checks as GET /setups, as one row per symbol per setup.
+
+    `include_failed` on the scan returns every condition of every setup in
+    full, which is readable for four symbols and unreadable for a hundred.
+    This reports each row as a count and a list of what is missing, sorted by
+    how close it came — so "which of these is one condition away" is a
+    question you can answer by looking.
+    """
+    symbols = await _resolve(db, ticker, group) or await _all_active(db)
+    if len(symbols) > MAX_SYMBOLS:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"{len(symbols)} symbols exceeds the {MAX_SYMBOLS} cap.",
+        )
+    if setup and setup not in setups.SETUPS:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Unknown setup {setup!r}. Try one of {sorted(setups.SETUPS)}.",
+        )
+
+    sessions, unavailable = await _fetch_sessions(symbols)
+    previous_closes = await _previous_closes(db, sessions)
+
+    rows: list[dict] = []
+    stale = 0
+    for symbol, bars in sessions.items():
+        age = _minutes_old(bars)
+        live = age <= STALE_AFTER_MINUTES
+        if not live:
+            stale += 1
+            if not include_stale:
+                continue
+
+        evaluations = (
+            [setups.SETUPS[setup](symbol, bars, previous_closes.get(symbol))]
+            if setup
+            else setups.evaluate_all(symbol, bars, previous_closes.get(symbol))
+        )
+        for evaluation in evaluations:
+            passed = [check for check in evaluation.checks if check.passed]
+            rows.append(
+                {
+                    "ticker": symbol,
+                    "setup": evaluation.setup,
+                    "live": live,
+                    "bars_minutes_old": round(age, 1),
+                    "passed": len(passed),
+                    "total": len(evaluation.checks),
+                    "triggered": evaluation.signal is not None,
+                    "marks": "".join(
+                        "+" if check.passed else "-" for check in evaluation.checks
+                    ),
+                    "failed": evaluation.failed,
+                    "readings": {
+                        check.name: check.detail for check in evaluation.checks
+                    },
+                }
+            )
+
+    # Closest first: a symbol one condition away is the one worth watching.
+    rows.sort(key=lambda row: (row["triggered"], row["passed"] / max(row["total"], 1)), reverse=True)
+    shown = [row for row in rows if row["passed"] >= min_passed][:limit]
+
+    return {
+        "scanned": len(sessions),
+        "unavailable": unavailable,
+        "stale_markets": stale,
+        "window": WINDOW,
+        "triggered": sum(1 for row in rows if row["triggered"]),
+        "rows": shown,
+        "caveat": (
+            "Conditions as they stand, not a forecast. Rows marked live=false "
+            "come from a market that is closed right now — most of this "
+            "universe is listed outside the US — and are excluded unless "
+            "include_stale=true. Nothing here has a measured hit rate."
+        ),
+    }
+
+
+async def _all_active(db: AsyncSession) -> list[str]:
+    return list(
+        (
+            await db.execute(
+                select(Stock.ticker).where(Stock.is_active.is_(True)).order_by(Stock.ticker)
+            )
+        ).scalars()
+    )

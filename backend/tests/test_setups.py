@@ -33,6 +33,28 @@ def failed(evaluation: setups.Evaluation) -> list[str]:
     return evaluation.failed
 
 
+def now_ending(session: list[Bar]) -> list[Bar]:
+    """Shift a session so its last bar is a minute old.
+
+    The scanner skips symbols whose newest bar is stale, because most of this
+    universe is listed outside the US and those markets are shut during the US
+    session. A fixture pinned to a fixed timestamp is stale by construction, so
+    anything testing the *live* path has to sit in the present.
+    """
+    shift = (datetime.now(timezone.utc) - timedelta(minutes=1)) - session[-1].at
+    return [
+        Bar(
+            at=item.at + shift,
+            close=item.close,
+            open=item.open,
+            high=item.high,
+            low=item.low,
+            volume=item.volume,
+        )
+        for item in session
+    ]
+
+
 # --- Position sizing ---------------------------------------------------------
 
 
@@ -394,7 +416,7 @@ async def test_scan_returns_a_signal_with_its_size(client, db, seeded_stocks, mo
     await db.commit()
 
     async def _session(symbol, window):
-        return _dip_and_rip_session()
+        return now_ending(_dip_and_rip_session())
 
     monkeypatch.setattr("app.routers.setups.fetch_intraday", _session)
 
@@ -465,7 +487,7 @@ async def test_the_prior_close_excludes_the_session_being_scanned(
     from app.models import StockPrice
 
     stock = seeded_stocks[0]
-    session = _dip_and_rip_session()
+    session = now_ending(_dip_and_rip_session())
     session_day = session[-1].at
 
     db.add_all(
@@ -527,3 +549,78 @@ def test_the_bar_shortfall_says_how_many_are_needed():
 
     detail = next(c.detail for c in evaluation.checks if c.name == "enough bars")
     assert str(setups.MIN_BARS["L2"]) in detail
+
+
+# --- The board ---------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_the_board_ranks_by_how_close_each_row_came(client, seeded_stocks, monkeypatch):
+    """"Which of these is one condition away" should be answerable by looking."""
+    strong = now_ending(_dip_and_rip_session())
+    weak = now_ending([bar(index * 5, 100.0 - index) for index in range(12)])
+
+    async def _bars(symbol, window):
+        return strong if symbol == seeded_stocks[0].ticker else weak
+
+    monkeypatch.setattr("app.routers.setups.fetch_intraday", _bars)
+
+    body = (await client.get("/setups/board?setup=L1")).json()
+
+    assert body["rows"], body
+    assert body["rows"][0]["passed"] >= body["rows"][-1]["passed"]
+    for row in body["rows"]:
+        assert row["marks"].count("+") == row["passed"]
+        assert len(row["marks"]) == row["total"]
+
+
+@pytest.mark.asyncio
+async def test_a_closed_market_is_marked_not_scored(client, seeded_stocks, monkeypatch):
+    """Most of this universe is listed outside the US.
+
+    Those markets are shut during the US session, so their newest bar is
+    yesterday's close. Scoring it produces a signal nobody can act on.
+    """
+
+    async def _yesterday(symbol, window):
+        return _dip_and_rip_session()  # fixed timestamps, hours old
+
+    monkeypatch.setattr("app.routers.setups.fetch_intraday", _yesterday)
+
+    body = (await client.get("/setups/board")).json()
+    assert body["rows"] == []
+    assert body["stale_markets"] >= 1
+
+    included = (await client.get("/setups/board?include_stale=true")).json()
+    assert included["rows"]
+    assert all(row["live"] is False for row in included["rows"])
+
+
+@pytest.mark.asyncio
+async def test_the_scan_skips_closed_markets_by_default(client, db, seeded_stocks, monkeypatch):
+    """A group like data_storage spans Seoul, Taipei and New York."""
+
+    async def _yesterday(symbol, window):
+        return _dip_and_rip_session()
+
+    monkeypatch.setattr("app.routers.setups.fetch_intraday", _yesterday)
+
+    body = (await client.get("/setups?ticker=MRNA&ticker=PFE")).json()
+
+    assert body["signals"] == []
+    assert sorted(body["stale_markets"]) == ["MRNA", "PFE"]
+    assert body["scanned"] == 0
+
+
+@pytest.mark.asyncio
+async def test_min_passed_filters_the_board_to_near_misses(client, seeded_stocks, monkeypatch):
+    async def _bars(symbol, window):
+        return now_ending([bar(index * 5, 100.0 - index) for index in range(12)])
+
+    monkeypatch.setattr("app.routers.setups.fetch_intraday", _bars)
+
+    body = (await client.get("/setups/board?min_passed=99")).json()
+
+    assert body["rows"] == []
+    # The scan still happened; the filter is on presentation, not on work.
+    assert body["scanned"] >= 1
