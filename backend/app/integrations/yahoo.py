@@ -264,10 +264,25 @@ INTRADAY_WINDOWS: dict[str, tuple[str, str, int | None, int]] = {
 
 @dataclass(frozen=True)
 class Bar:
-    """One intraday bar: a moment and a price."""
+    """One intraday bar.
+
+    The chart only ever needed a moment and a price. The intraday setups need
+    the rest of the candle: an opening range is built from highs and lows, VWAP
+    and relative volume need volume, and "long upper wick" and "bullish
+    engulfing" are statements about where the close sits inside the bar.
+
+    Everything but ``at`` and ``close`` is optional, because Yahoo pads a
+    session with partial bars and a missing volume must read as unknown rather
+    than as zero — zero volume would make a quiet bar look like a halt and
+    drag every relative-volume average down with it.
+    """
 
     at: datetime
     close: float
+    open: float | None = None
+    high: float | None = None
+    low: float | None = None
+    volume: int | None = None
 
 
 _intraday_cache: dict[tuple[str, str], tuple[float, list[Bar]]] = {}
@@ -282,9 +297,23 @@ def parse_intraday(ticker: str, payload: dict, keep_last: int | None) -> list[Ba
     result = results[0]
     timestamps = result.get("timestamp") or []
     blocks = (result.get("indicators") or {}).get("quote") or [{}]
-    closes = (blocks[0] if blocks else {}).get("close") or []
+    quote = blocks[0] if blocks else {}
+    closes = quote.get("close") or []
+    opens = quote.get("open") or []
+    highs = quote.get("high") or []
+    lows = quote.get("low") or []
+    volumes = quote.get("volume") or []
 
     market = markets.resolve(ticker)
+
+    def _price(series: list, index: int) -> float | None:
+        """One OHLC value, in the market's major unit."""
+        if index >= len(series) or series[index] is None:
+            return None
+        value = float(series[index])
+        # London quotes in pence; the close is already converted below, and an
+        # unconverted high would sit a hundred times above it.
+        return markets.normalise_price(value, market) if market else value
 
     bars: list[Bar] = []
     for index, stamp in enumerate(timestamps):
@@ -295,7 +324,21 @@ def parse_intraday(ticker: str, payload: dict, keep_last: int | None) -> list[Ba
         except (ValueError, OSError, OverflowError):
             continue
         price = float(closes[index])
-        bars.append(Bar(at=at, close=markets.normalise_price(price, market) if market else price))
+        volume = (
+            int(volumes[index])
+            if index < len(volumes) and volumes[index] is not None
+            else None
+        )
+        bars.append(
+            Bar(
+                at=at,
+                close=markets.normalise_price(price, market) if market else price,
+                open=_price(opens, index),
+                high=_price(highs, index),
+                low=_price(lows, index),
+                volume=volume,
+            )
+        )
 
     bars.sort(key=lambda bar: bar.at)
     return bars[-keep_last:] if keep_last else bars
