@@ -525,6 +525,20 @@ def _median(values: list[float]) -> float | None:
     return (ordered[middle - 1] + ordered[middle]) / 2
 
 
+# The ranking is split into quintiles, so five buckets.
+BUCKETS = 5
+
+# A period counts as well dispersed when the factor takes at least this many
+# distinct values. Below twice the bucket count, which member of a tied block
+# lands in the top bucket is decided by sort order rather than by the factor,
+# and the measured spread is a sample of a tie rather than a reading of the
+# ranking. Such periods are still reported — they are not wrong, just
+# uninformative — but they are summarised separately, because a factor whose
+# headline comes only from its most degenerate periods has not been shown to
+# work, and the overall mean cannot show that on its own.
+WELL_DISPERSED_MIN_DISTINCT = BUCKETS * 2
+
+
 def _stdev(values: list[float]) -> float | None:
     """Sample standard deviation, or None when one period cannot have one."""
     if len(values) < 2:
@@ -558,7 +572,7 @@ def _spread(ranked: list[tuple[str, float]], forward: dict[str, float]) -> dict:
         # and any spread would be an artefact of the sort, not a finding.
         return {"spread": None, "reason": "no_dispersion", "symbols": len(ranked)}
 
-    size = max(1, len(ordered) // 5)
+    size = max(1, len(ordered) // BUCKETS)
     top = [forward[symbol] for symbol, _ in ordered[:size] if symbol in forward]
     bottom = [forward[symbol] for symbol, _ in ordered[-size:] if symbol in forward]
     if not top or not bottom:
@@ -807,6 +821,14 @@ async def validate(
             if period[strategy]["spread"] is None and reason:
                 unmeasured[reason] = unmeasured.get(reason, 0) + 1
 
+        # Restricted to periods where the factor actually separated symbols.
+        dispersed = [
+            period[strategy]["spread"]
+            for period in results
+            if period[strategy]["spread"] is not None
+            and period[strategy].get("distinct_scores", 0) >= WELL_DISPERSED_MIN_DISTINCT
+        ]
+
         entry: dict = {"periods": len(spreads)}
         if spreads:
             entry.update(
@@ -823,6 +845,18 @@ async def validate(
                     "spread_stdev": _stdev(spreads),
                 }
             )
+        # The same three numbers over the periods that could actually rank.
+        # Where this diverges sharply from the headline, the headline is
+        # measuring ties.
+        if spreads:
+            entry["well_dispersed"] = {
+                "periods": len(dispersed),
+                "min_distinct_scores": WELL_DISPERSED_MIN_DISTINCT,
+                "mean_spread": (
+                    round(sum(dispersed) / len(dispersed), 4) if dispersed else None
+                ),
+                "periods_positive": sum(1 for value in dispersed if value > 0),
+            }
         # Why the other periods could not be measured, rather than a silent gap
         # in the period list that reads as an absent result.
         if unmeasured:

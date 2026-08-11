@@ -506,3 +506,57 @@ async def test_a_quiet_symbol_is_not_reported_as_missing_price_history(db, seede
 
     assert item.technical_coverage == 1.0
     assert item.sentiment_confidence == 0.2
+
+
+def test_well_dispersed_periods_are_summarised_apart_from_tied_ones():
+    """A factor can look good purely through its most degenerate periods.
+
+    Found in real output: the sentiment pillar's positive mean came entirely
+    from periods where seventeen symbols were sorted into two score blocks, so
+    the top quintile was three names drawn arbitrarily from one tie. In the
+    periods where the factor genuinely varied it was negative. The overall
+    mean cannot show that, so it is reported both ways.
+    """
+    forward = {f"S{index:02d}": float(index) for index in range(20)}
+
+    # Two blocks: the quintile split is a coin toss inside each tie.
+    tied = [(symbol, 1.0 if int(symbol[1:]) < 10 else 0.0) for symbol in forward]
+    # Every symbol distinct: the ranking means something.
+    spread_out = [(symbol, float(symbol[1:])) for symbol in forward]
+
+    assert scoring._spread(tied, forward)["distinct_scores"] == 2
+    assert (
+        scoring._spread(spread_out, forward)["distinct_scores"]
+        >= scoring.WELL_DISPERSED_MIN_DISTINCT
+    )
+
+
+@pytest.mark.asyncio
+async def test_validation_reports_the_dispersed_subset(db):
+    """The summary carries both readings, not just the flattering one."""
+    stocks = [
+        Stock(ticker=f"D{index:02d}", company_name=f"Disp {index}", sector="pharma")
+        for index in range(20)
+    ]
+    db.add_all(stocks)
+    await db.commit()
+    for stock in stocks:
+        await db.refresh(stock)
+
+    now = datetime.now(timezone.utc)
+    for index, stock in enumerate(stocks):
+        # A distinct rate per symbol. Two shared rates would give every symbol
+        # in a group an identical series and therefore an identical score —
+        # two distinct values across twenty symbols, which is the degenerate
+        # case this test is meant to be the opposite of.
+        rate = 0.996 + index * 0.0008
+        await add_prices(db, stock, [100.0 * rate**day for day in range(220)], end=now)
+
+    result = await scoring.validate(db, as_of_days_ago=25, horizon_days=15, periods=3, step_days=20)
+
+    technical = result["summary"]["technical"]
+    assert "well_dispersed" in technical
+    assert technical["well_dispersed"]["min_distinct_scores"] == scoring.WELL_DISPERSED_MIN_DISTINCT
+    # Every symbol scores differently here, so every measured period qualifies.
+    assert technical["well_dispersed"]["periods"] == technical["periods"]
+    assert technical["well_dispersed"]["mean_spread"] is not None
