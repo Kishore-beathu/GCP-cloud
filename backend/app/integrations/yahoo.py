@@ -181,14 +181,25 @@ async def update_yahoo_prices(
     tickers: list[str] | None = None,
     range_: str | None = None,
     only_missing: bool = False,
-) -> dict[str, int]:
+) -> dict:
     """Load current price and daily history for the given symbols.
 
     One call per symbol returns both, so this fills the chart, the watchlist
     price and the backtester in a single pass.
+
+    Symbols Yahoo returns nothing for are counted *and named*. A bare count
+    said eight symbols would never have a price without saying which eight, so
+    a permanently unreachable symbol was indistinguishable from a transient
+    outage and neither could be acted on.
     """
     settings = get_settings()
-    totals = {"symbols": 0, "inserted": 0, "updated": 0, "uncovered": 0}
+    totals: dict = {
+        "symbols": 0,
+        "inserted": 0,
+        "updated": 0,
+        "uncovered": 0,
+        "uncovered_symbols": [],
+    }
     if not settings.yahoo_prices_enabled:
         logger.info("Yahoo price load skipped: YAHOO_PRICES_ENABLED is false")
         return totals
@@ -209,6 +220,7 @@ async def update_yahoo_prices(
 
             if not quotes:
                 totals["uncovered"] += 1
+                totals["uncovered_symbols"].append(stock.ticker)
             else:
                 result = await upsert_quotes(db, stock, quotes, source=SOURCE)
                 totals["inserted"] += result["inserted"]

@@ -213,7 +213,13 @@ async def test_disabled_setting_makes_it_a_no_op(db, seeded_stocks, monkeypatch)
     get_settings.cache_clear()
     try:
         result = await update_yahoo_prices(db, ["MRNA"])
-        assert result == {"symbols": 0, "inserted": 0, "updated": 0, "uncovered": 0}
+        assert result == {
+            "symbols": 0,
+            "inserted": 0,
+            "updated": 0,
+            "uncovered": 0,
+            "uncovered_symbols": [],
+        }
     finally:
         get_settings.cache_clear()
 
@@ -370,3 +376,30 @@ async def test_intraday_reports_upstream_rate_limiting(client, seeded_stocks, mo
 
     assert (await client.get("/stocks/PFE/intraday?window=1h")).status_code == 503
     yahoo.clear_intraday_cache()
+
+
+@pytest.mark.asyncio
+async def test_uncovered_symbols_are_named_not_just_counted(db, seeded_stocks, monkeypatch):
+    """A count says eight symbols will never price without saying which eight.
+
+    Without the names, a symbol Yahoo does not recognise at all is
+    indistinguishable from one caught in a transient outage, and neither can
+    be acted on.
+    """
+    monkeypatch.setattr("app.integrations.yahoo.REQUEST_DELAY_SECONDS", 0)
+    get_settings.cache_clear()
+    try:
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if "MRNA" in str(request.url):
+                return httpx.Response(200, json=KOREA_PAYLOAD)
+            return httpx.Response(404, json=NOT_FOUND_PAYLOAD)
+
+        _mock_yahoo(monkeypatch, handler)
+
+        result = await update_yahoo_prices(db, ["MRNA", "PFE"])
+
+        assert result["uncovered"] == 1
+        assert result["uncovered_symbols"] == ["PFE"]
+    finally:
+        get_settings.cache_clear()
