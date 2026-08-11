@@ -280,16 +280,41 @@ def load_ticker_seeds() -> list[TickerSeed]:
     return seeds or list(SEED_TICKERS)
 
 
-async def seed_stocks(db: AsyncSession) -> int:
-    """Insert any missing stocks. Returns how many rows were added."""
+async def seed_stocks(db: AsyncSession) -> dict[str, int]:
+    """Insert missing stocks and reconcile the sector of existing ones.
+
+    Inserting only was enough while the universe grew by addition, but a
+    reclassification then reached a fresh clone and never reached a database
+    that already had the row — so the same code produced two different sector
+    maps depending on when the database was first seeded, and the group a
+    symbol was ranked in depended on that history rather than on the code.
+
+    Only the sector is reconciled. Company name, exchange and currency are
+    left alone: those are corrected from live vendor data elsewhere, and
+    overwriting them here would undo that on every startup.
+    """
     seeds = load_ticker_seeds()
-    existing = set(
-        (await db.execute(select(Stock.ticker))).scalars()
-    )
+    existing = {
+        ticker: sector
+        for ticker, sector in (await db.execute(select(Stock.ticker, Stock.sector))).all()
+    }
 
     added = 0
+    reclassified = 0
     for seed in seeds:
         if seed.ticker in existing:
+            if existing[seed.ticker] != seed.sector:
+                stock = (
+                    await db.execute(select(Stock).where(Stock.ticker == seed.ticker))
+                ).scalar_one()
+                logger.info(
+                    "Reclassifying %s from %s to %s",
+                    seed.ticker,
+                    stock.sector,
+                    seed.sector,
+                )
+                stock.sector = seed.sector
+                reclassified += 1
             continue
         market = markets.resolve(seed.ticker)
         db.add(
@@ -308,10 +333,10 @@ async def seed_stocks(db: AsyncSession) -> int:
         )
         added += 1
 
-    if added:
+    if added or reclassified:
         await db.commit()
-        logger.info("Seeded %d new stocks", added)
-    return added
+        logger.info("Seeded %d new stocks, reclassified %d", added, reclassified)
+    return {"added": added, "reclassified": reclassified}
 
 
 async def tickers_in_group(db: AsyncSession, group_key: str) -> list[str]:
