@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from app.models import EventType, Sentiment
+from app.services import sentiment
 from app.services.sentiment import LexiconAnalyzer, SentimentAnalyzer
 
 
@@ -95,7 +96,7 @@ def test_chip_supply_news_is_no_longer_invisible():
         "Samsung's $576 Billion Chip Push Gets New Government Backing",
     ):
         assert analyzer.score(headline).score == 0.0, headline
-        storage = analyzer.score(headline, sector_group="data_storage")
+        storage = analyzer.score(headline, lexicon_key="data_storage")
         assert storage.score > 0.5, headline
         assert storage.sentiment is Sentiment.POSITIVE, headline
 
@@ -106,7 +107,7 @@ def test_cycle_downside_is_read_as_negative_for_a_supplier():
     headline = "Inventory correction drives severe ASP erosion"
 
     assert analyzer.score(headline).score == 0.0
-    assert analyzer.score(headline, sector_group="data_storage").sentiment is Sentiment.NEGATIVE
+    assert analyzer.score(headline, lexicon_key="data_storage").sentiment is Sentiment.NEGATIVE
 
 
 def test_a_genuinely_neutral_headline_stays_neutral():
@@ -114,7 +115,7 @@ def test_a_genuinely_neutral_headline_stays_neutral():
     analyzer = LexiconAnalyzer()
 
     result = analyzer.score(
-        "Micron vs. SK hynix: One Stock Rules AI Memory", sector_group="data_storage"
+        "Micron vs. SK hynix: One Stock Rules AI Memory", lexicon_key="data_storage"
     )
 
     assert result.sentiment is Sentiment.NEUTRAL
@@ -129,8 +130,8 @@ def test_a_shortage_is_read_as_pricing_power_for_a_supplier():
     analyzer = LexiconAnalyzer()
     headline = "Memory chip shortage could last two more years"
 
-    pharma = analyzer.score(headline, sector_group="pharma_life_sciences")
-    storage = analyzer.score(headline, sector_group="data_storage")
+    pharma = analyzer.score(headline, lexicon_key="pharma_life_sciences")
+    storage = analyzer.score(headline, lexicon_key="data_storage")
 
     assert pharma.score < 0
     assert storage.score > 0
@@ -140,7 +141,7 @@ def test_the_inverted_term_does_not_fire_on_both_sides_at_once():
     """Left in both sets it would net to zero and read as no opinion."""
     analyzer = LexiconAnalyzer()
 
-    result = analyzer.explain("Severe shortage reported", sector_group="data_storage")
+    result = analyzer.explain("Severe shortage reported", lexicon_key="data_storage")
     polarities = {match["polarity"] for match in result["matches"] if "shortage" in match["term"]}
 
     assert polarities == {"positive"}
@@ -150,7 +151,7 @@ def test_export_controls_are_negative_for_a_chipmaker():
     analyzer = LexiconAnalyzer()
 
     result = analyzer.score(
-        "New export controls restrict shipments to key customers", sector_group="ai"
+        "New export controls restrict shipments to key customers", lexicon_key="ai"
     )
 
     assert result.sentiment is Sentiment.NEGATIVE
@@ -162,7 +163,7 @@ def test_pharma_scoring_is_unchanged_by_the_overlays():
     headline = "FDA grants accelerated approval after the trial met its primary endpoint"
 
     base = analyzer.score(headline)
-    pharma = analyzer.score(headline, sector_group="pharma_life_sciences")
+    pharma = analyzer.score(headline, lexicon_key="pharma_life_sciences")
 
     assert base.score == pharma.score
     assert base.sentiment is Sentiment.POSITIVE
@@ -173,7 +174,107 @@ def test_an_unmapped_sector_gets_the_base_lexicon():
     analyzer = LexiconAnalyzer()
     headline = "Company reports record revenue"
 
-    assert analyzer.score(headline, sector_group="other").score == analyzer.score(headline).score
-    assert analyzer.score(headline, sector_group="not-a-group").score == analyzer.score(
+    assert analyzer.score(headline, lexicon_key="other").score == analyzer.score(headline).score
+    assert analyzer.score(headline, lexicon_key="not-a-group").score == analyzer.score(
         headline
     ).score
+
+
+# --- Clinical-stage overlay --------------------------------------------------
+# The base lexicon was written pharma-first and reads trial and regulatory
+# language well. It was completely silent on how a company with no revenue
+# funds itself, which is the single most common thing that cohort announces.
+
+
+CLINICAL = sentiment.overlay_key("clinical_stage")
+
+
+@pytest.mark.parametrize(
+    "headline",
+    [
+        "Viking Therapeutics Announces Proposed Public Offering of Common Stock",
+        "Sana Biotechnology Announces $150 Million Underwritten Offering of Shares",
+        "Editas Medicine Prices $75.0 Million Registered Direct Offering",
+        "Fate Therapeutics Announces At-The-Market Equity Distribution Program",
+        "Erasca Announces Reverse Stock Split to Regain Nasdaq Compliance",
+    ],
+)
+def test_an_equity_raise_reads_as_bad_news_for_a_pre_revenue_company(headline):
+    """Every one of these scored exactly 0.00 before the overlay existed.
+
+    An offering routinely takes 10-20% out of a clinical-stage name in a
+    session. Scoring it neutral is not a missing nuance — it is the pillar
+    being blind to the most frequent event in the cohort. The word "dilution"
+    was already a base negative and never appears; press releases say
+    "underwritten public offering".
+    """
+    analyzer = sentiment.LexiconAnalyzer()
+
+    assert analyzer.score(headline).score == 0.0
+    assert analyzer.score(headline, None, CLINICAL).score < 0
+
+
+def test_a_licensing_deal_counts_for_more_when_there_is_no_product():
+    """The same words, weighted by what they mean for the company saying them.
+
+    For a large-cap drugmaker a licensing deal is a Tuesday. For a company with
+    no revenue it is validation by a counterparty that did real diligence, and
+    usually non-dilutive cash — frequently a larger move than a mid-stage
+    readout.
+    """
+    analyzer = sentiment.LexiconAnalyzer()
+    text = "Kymera announces license agreement and collaboration with Sanofi"
+
+    base = analyzer.explain(text)
+    clinical = analyzer.explain(text, None, CLINICAL)
+
+    base_weight = sum(match["weight"] for match in base["matches"])
+    clinical_weight = sum(match["weight"] for match in clinical["matches"])
+    assert clinical_weight > base_weight
+
+
+def test_a_runway_extension_offsets_the_restructuring_that_paid_for_it():
+    """These arrive as one headline, and the base lexicon only saw one half."""
+    analyzer = sentiment.LexiconAnalyzer()
+    headline = "Beam Therapeutics Extends Cash Runway into 2029 Following Restructuring"
+
+    assert analyzer.score(headline).score < 0
+    assert analyzer.score(headline, None, CLINICAL).score > 0
+
+
+def test_one_phrase_counts_once_however_many_ways_it_could_match():
+    """Overlapping patterns inflate the hit count, and confidence reads it.
+
+    The score is a ratio, so double-counting one side does not flip a one-sided
+    headline. Confidence is computed from the number of hits, though, so two
+    patterns firing on the same six words claim two independent pieces of
+    evidence for what is one fact.
+    """
+    analyzer = sentiment.LexiconAnalyzer()
+
+    explained = analyzer.explain(
+        "Announces Proposed Public Offering of Common Stock", None, CLINICAL
+    )
+    financing = [
+        match for match in explained["matches"] if "offering" in match["term"].lower()
+    ]
+
+    assert len(financing) == 1
+
+
+def test_a_large_cap_drugmaker_keeps_the_base_reading():
+    """Both sectors live in one group, so the overlay must key on the sector.
+
+    Pfizer issuing debt is ordinary treasury work. If the overlay were keyed at
+    the group level it would land on every pharma name in the universe.
+    """
+    assert sentiment.overlay_key("pharma") == "pharma_life_sciences"
+    assert sentiment.overlay_key("clinical_stage") == "clinical_stage"
+    assert sentiment.overlay_key("memory") == "data_storage"
+    # An unmapped sector still falls through to the base lexicon.
+    assert sentiment.overlay_key("nonsense") == "other"
+
+    analyzer = sentiment.LexiconAnalyzer()
+    headline = "Pfizer Announces Public Offering of Senior Notes"
+
+    assert analyzer.score(headline, None, sentiment.overlay_key("pharma")).score == 0.0

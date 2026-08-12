@@ -16,9 +16,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import NewsArticle, SentimentScore, Stock
 from app.services.alerts import PendingNotification, deliver_all, evaluate_alerts_for_article
-from app.services import sectors
 from app.services.dedup import DEFAULT_WINDOW, is_duplicate
-from app.services.sentiment import SentimentAnalyzer, get_analyzer
+from app.services.sentiment import SentimentAnalyzer, get_analyzer, overlay_key
 
 logger = logging.getLogger(__name__)
 
@@ -198,9 +197,10 @@ async def store_articles(
 
         # The lexicon reads the same words differently depending on whose story
         # it is: a shortage is a supply failure for a drugmaker and pricing
-        # power for a memory maker.
+        # power for a memory maker, and an equity offering is routine for one
+        # and existential for a company with no revenue.
         sentiment = analyzer.analyze_sentiment(
-            raw.headline, raw.body, sectors.group_for(stock.sector)
+            raw.headline, raw.body, overlay_key(stock.sector)
         )
         event = analyzer.classify_event_type(raw.headline, raw.body)
         score = SentimentScore(

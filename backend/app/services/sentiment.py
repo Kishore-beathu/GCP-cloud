@@ -283,12 +283,91 @@ _SUPPLY_SIDE_OVERLAY = _Overlay(
     suppress_negative=frozenset({r"shortage"}),
 )
 
-# AI names are largely the same supply chain read from the demand side; the
-# overlay is shared rather than duplicated, and diverges when evidence says to.
+# --- Pre-revenue drug developers ---------------------------------------------
+# The base lexicon reads trial and regulatory language well — it was written
+# pharma-first — and is completely blind to how a company with no revenue
+# actually funds itself. Six representative financing headlines were scored
+# against it and every one came back 0.00: a proposed public offering, an
+# underwritten offering, a registered direct, an ATM program, a reverse split
+# for listing compliance, and a runway extension. An equity raise is the most
+# common single news event these companies produce and routinely moves them
+# 10-20% in a session, so scoring it as no opinion is not a small gap.
+#
+# The word "dilution" is already a base negative and never appears: press
+# releases say "underwritten public offering". The terms below are the ones
+# actually printed.
+#
+# Each entry is one alternation rather than several overlapping terms. Weights
+# sum across patterns, so "proposed public offering of common stock" would fire
+# an adjective rule and a noun rule on the same six words. The final score is a
+# ratio — (positive - negative) / total — so that does not change the sign of a
+# one-sided headline, but it does two things that matter: it drags a mixed
+# headline further negative than its evidence warrants ("prices offering to
+# fund Phase 3 launch"), and it doubles the hit count, which is what
+# ``confidence`` is computed from. Two patterns on one phrase would report two
+# corroborating pieces of evidence where there is one.
+_FINANCING_PRESSURE: dict[str, float] = {
+    r"(?:(?:public|underwritten|registered direct|equity|proposed|secondary) "
+    r"offering|offering of (?:common stock|shares|units))": 0.65,
+    r"at[- ]the[- ]market": 0.6,
+    # Almost always a Nasdaq minimum-bid remedy at this size, and read as
+    # distress rather than as the neutral mechanical event it is elsewhere.
+    r"reverse (?:stock )?split": 0.7,
+    r"(?:minimum bid price|deficiency (?:letter|notice))": 0.7,
+}
+
+# The other half of the same asymmetry. For Pfizer a licensing deal is a
+# Tuesday; for a company with no product it is validation by a counterparty
+# with real diligence, and usually non-dilutive cash — frequently a larger
+# move than a mid-stage readout. The base weights are right for large-cap
+# pharma and far too low here, so they are raised rather than added.
+_PARTNERING_AS_VALIDATION: dict[str, float] = {
+    r"licens\w*": 0.8,
+    r"collaborat\w*": 0.75,
+    r"partnership": 0.8,
+    r"(?:milestone|upfront) payment": 0.95,
+    r"non[- ]dilutive": 0.7,
+    # One alternation for the same reason as above: the noun-first and
+    # verb-first phrasings both appear, and "extends its cash runway into 2029"
+    # contains both at once.
+    r"(?:extend\w* (?:its |the )?(?:cash )?runway"
+    r"|(?:cash )?runway (?:extend\w*|into|through))": 0.6,
+}
+
+_CLINICAL_STAGE_OVERLAY = _Overlay(
+    positive=_PARTNERING_AS_VALIDATION,
+    negative=_FINANCING_PRESSURE,
+)
+
+# Keyed by sector *or* group — see ``overlay_key``. AI names are largely the
+# same supply chain read from the demand side, so that overlay is shared
+# rather than duplicated, and diverges when evidence says to. Clinical-stage
+# is keyed at the sector level because its group also contains Pfizer, whose
+# reading of the same words is the one already in the base lexicon.
 _OVERLAYS: dict[str, _Overlay] = {
     "data_storage": _SUPPLY_SIDE_OVERLAY,
     "ai": _SUPPLY_SIDE_OVERLAY,
+    "clinical_stage": _CLINICAL_STAGE_OVERLAY,
 }
+
+
+def overlay_key(sector: str | None) -> str:
+    """The most specific lexicon key for a sector.
+
+    Overlays started out one-per-group, which worked while each group read its
+    own vocabulary the same way throughout. Pharma & Life Sciences does not: a
+    large-cap drugmaker and a pre-revenue developer sit in the same group and
+    read "offering" and "license agreement" completely differently. So a
+    sector may claim an overlay of its own, and it wins over its group's when
+    it does — most specific first, group as the fallback, base lexicon if
+    neither has one.
+    """
+    from app.services import sectors
+
+    key = (sector or "").strip().lower()
+    if key in _OVERLAYS:
+        return key
+    return sectors.group_for(key)
 
 
 def _compile(terms: dict[str, float]) -> tuple[tuple[re.Pattern[str], float], ...]:
@@ -310,14 +389,15 @@ _Patterns = tuple[tuple[re.Pattern[str], float], ...]
 
 
 @lru_cache(maxsize=16)
-def _patterns_for(sector_group: str | None) -> tuple[_Patterns, _Patterns]:
-    """The positive and negative pattern sets that apply to one sector group.
+def _patterns_for(lexicon_key: str | None) -> tuple[_Patterns, _Patterns]:
+    """The positive and negative pattern sets for one overlay key.
 
+    The key is a sector or a group, whichever ``overlay_key`` resolved to.
     Cached because compiling ~200 patterns per article would dwarf the cost of
-    matching them. An unknown or missing group gets the base lexicon, so a
+    matching them. An unknown or missing key gets the base lexicon, so a
     symbol whose sector is unmapped is scored exactly as it was before.
     """
-    overlay = _OVERLAYS.get(sector_group or "")
+    overlay = _OVERLAYS.get(lexicon_key or "")
     if overlay is None:
         return _POSITIVE_PATTERNS, _NEGATIVE_PATTERNS
 
@@ -454,10 +534,10 @@ def _is_negated(text: str, match_start: int) -> bool:
 class LexiconAnalyzer:
     """Keyword scorer tuned for pharma and life-sciences headlines."""
 
-    model_version = "lexicon-v3"
+    model_version = "lexicon-v4"
 
     @staticmethod
-    def _tally(text: str, sector_group: str | None = None) -> tuple[float, float, int]:
+    def _tally(text: str, lexicon_key: str | None = None) -> tuple[float, float, int]:
         """Sum positive and negative weight over every occurrence in ``text``.
 
         Each occurrence is negation-checked on its own, so "did not meet the
@@ -466,7 +546,7 @@ class LexiconAnalyzer:
         """
         positive = negative = 0.0
         hits = 0
-        positive_patterns, negative_patterns = _patterns_for(sector_group)
+        positive_patterns, negative_patterns = _patterns_for(lexicon_key)
 
         for patterns, is_positive in (
             (positive_patterns, True),
@@ -488,12 +568,12 @@ class LexiconAnalyzer:
         return positive, negative, hits
 
     def explain(
-        self, headline: str, body: str | None = None, sector_group: str | None = None
+        self, headline: str, body: str | None = None, lexicon_key: str | None = None
     ) -> dict:
         """Which terms fired and how — for tuning the lexicon against real news."""
         text = _prepare(headline, body).lower()
         matched: list[dict] = []
-        positive_patterns, negative_patterns = _patterns_for(sector_group)
+        positive_patterns, negative_patterns = _patterns_for(lexicon_key)
         for patterns, is_positive in (
             (positive_patterns, True),
             (negative_patterns, False),
@@ -510,23 +590,23 @@ class LexiconAnalyzer:
                             "negated": negated,
                         }
                     )
-        result = self.score(headline, body, sector_group)
+        result = self.score(headline, body, lexicon_key)
         return {
             "sentiment": result.sentiment.value,
             "score": result.score,
             "confidence": result.confidence,
-            "sector_group": sector_group,
+            "lexicon_key": lexicon_key,
             "matches": matched,
         }
 
     def score(
-        self, headline: str, body: str | None = None, sector_group: str | None = None
+        self, headline: str, body: str | None = None, lexicon_key: str | None = None
     ) -> SentimentResult:
         text = _prepare(headline, body).lower()
         if not text:
             return SentimentResult(Sentiment.NEUTRAL, 0.0, 0.0, self.model_version)
 
-        positive, negative, hits = self._tally(text, sector_group)
+        positive, negative, hits = self._tally(text, lexicon_key)
         total = positive + negative
         if total == 0:
             return SentimentResult(Sentiment.NEUTRAL, 0.0, 0.25, self.model_version)
@@ -563,7 +643,7 @@ class FinBertAnalyzer:
         return self._pipeline
 
     def score(
-        self, headline: str, body: str | None = None, sector_group: str | None = None
+        self, headline: str, body: str | None = None, lexicon_key: str | None = None
     ) -> SentimentResult:
         # FinBERT learned its own vocabulary from a general financial corpus and
         # has no sector switch to set, so the argument is accepted for interface
@@ -609,16 +689,16 @@ class SentimentAnalyzer:
         return self._backend.model_version
 
     def analyze_sentiment(
-        self, headline: str, body: str | None = None, sector_group: str | None = None
+        self, headline: str, body: str | None = None, lexicon_key: str | None = None
     ) -> SentimentResult:
         """Score one article. Never raises: a backend failure degrades to neutral.
 
-        ``sector_group`` selects the lexicon overlay — see ``_OVERLAYS``. Omit it
+        ``lexicon_key`` selects the lexicon overlay — see ``_OVERLAYS``. Omit it
         and the base pharma lexicon applies, which is the correct default for an
         unmapped symbol and the historical behaviour for every other one.
         """
         try:
-            return self._backend.score(headline, body, sector_group)
+            return self._backend.score(headline, body, lexicon_key)
         except Exception:  # pragma: no cover - defensive, keeps ingestion alive
             logger.exception("Sentiment scoring failed; recording neutral")
             return SentimentResult(Sentiment.NEUTRAL, 0.0, 0.0, f"{self.model_version}+error")

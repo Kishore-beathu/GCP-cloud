@@ -19,8 +19,7 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import NewsArticle, SentimentScore, Stock
-from app.services import sectors
-from app.services.sentiment import SentimentAnalyzer, get_analyzer
+from app.services.sentiment import SentimentAnalyzer, get_analyzer, overlay_key
 
 logger = logging.getLogger(__name__)
 
@@ -91,8 +90,8 @@ async def rescore_articles(
     for article, score, sector in (await db.execute(query)).all():
         report.examined += 1
 
-        group = sectors.group_for(sector)
-        sentiment = analyzer.analyze_sentiment(article.headline, article.body, group)
+        key = overlay_key(sector)
+        sentiment = analyzer.analyze_sentiment(article.headline, article.body, key)
         event = analyzer.classify_event_type(article.headline, article.body)
 
         changed = (
