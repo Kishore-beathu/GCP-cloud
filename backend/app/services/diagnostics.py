@@ -12,9 +12,12 @@ but report only status, latency and the vendor's message.
 
 from __future__ import annotations
 
+import hashlib
+import os
 import time
 from dataclasses import asdict, dataclass
 from datetime import date, timedelta
+from pathlib import Path
 
 import httpx
 
@@ -332,6 +335,71 @@ async def probe_sec(client: httpx.AsyncClient, settings: Settings) -> Probe:
     )
 
 
+def _fingerprint(value: str) -> str:
+    """A stable, non-reversible short name for a credential.
+
+    Eight hex characters of a SHA-256 digest. It cannot be turned back into the
+    key, and it is the only way to answer the question a rejected credential
+    actually raises: *is the running process using the value I just wrote?*
+    Compare it before and after a restart — if it does not change, the process
+    never picked up the edit.
+    """
+    return hashlib.sha256(value.encode()).hexdigest()[:8]
+
+
+def credential_origin(settings: Settings) -> list[dict]:
+    """Where each key came from, and what shape it is — never its value.
+
+    A rejected key has only a few possible causes and the vendor's 401 cannot
+    tell them apart. This does, without printing anything secret:
+
+    * **An OS environment variable outranks the file.** pydantic-settings reads
+      the real environment before `.env`, so a `$env:FINNHUB_API_KEY` set once
+      in the shell that launched the server silently wins over every later edit
+      to `backend/.env`. Rotating the key then changes nothing, however many
+      times you do it, and nothing in the failure hints at why.
+    * **The file was never found.** `env_file=".env"` is relative to the
+      working directory, so starting uvicorn from the repository root instead
+      of `backend/` loads no file at all.
+    * **The value carries whitespace or quotes.** `KEY="abc"` in a `.env` keeps
+      the quotation marks as part of the value, and a trailing space survives a
+      copy-paste; both are sent upstream verbatim and rejected.
+    """
+    env_file = Path(settings.model_config.get("env_file") or ".env")
+    rows: list[dict] = []
+    for variable, value in (
+        ("FINNHUB_API_KEY", settings.finnhub_api_key),
+        ("ALPHA_VANTAGE_API_KEY", settings.alpha_vantage_api_key),
+    ):
+        row: dict = {"variable": variable, "configured": bool(value)}
+        if value:
+            row.update(
+                {
+                    "length": len(value),
+                    "fingerprint": _fingerprint(value),
+                    # Both are silent failures: the value looks right in the
+                    # file and is wrong on the wire.
+                    "has_surrounding_whitespace": value != value.strip(),
+                    "is_quoted": len(value) > 1 and value[0] == value[-1] and value[0] in "\"'",
+                    "source": (
+                        "os_environment (overrides .env)"
+                        if os.environ.get(variable)
+                        else "env_file"
+                    ),
+                }
+            )
+        rows.append(row)
+
+    return [
+        {
+            "env_file": str(env_file.resolve()),
+            "env_file_found": env_file.is_file(),
+            "working_directory": str(Path.cwd()),
+        },
+        *rows,
+    ]
+
+
 async def probe_sources(settings: Settings) -> dict:
     """Probe every source. Failures are reported, never raised."""
     async with httpx.AsyncClient() as client:
@@ -353,6 +421,10 @@ async def probe_sources(settings: Settings) -> dict:
         "healthy": [probe.source for probe in probes if probe.ok],
         "failing": [probe.source for probe in probes if not probe.ok],
         "sources": [probe.as_dict() for probe in probes],
+        # Only meaningful when something was rejected, but cheap enough to
+        # always include — and its value is in being there in the same paste as
+        # the 401 rather than requested a round later.
+        "credentials": credential_origin(settings),
     }
 
 

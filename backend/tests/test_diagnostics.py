@@ -25,6 +25,9 @@ def settings(**overrides) -> SimpleNamespace:
         "finnhub_api_key": "test-key",
         "alpha_vantage_api_key": "test-key",
         "sec_user_agent": "Test Agent test@example.com",
+        # The real Settings carries this; credential_origin reads the env-file
+        # path out of it to report where a key could have come from.
+        "model_config": {"env_file": ".env"},
     }
     base.update(overrides)
     return SimpleNamespace(**base)
@@ -256,6 +259,93 @@ async def test_redaction_covers_every_configured_credential(monkeypatch):
     report = await probe_sources(settings(finnhub_api_key=finnhub_key))
 
     assert finnhub_key not in str(report)
+
+
+# --- Credential origin ------------------------------------------------------
+# A 401 says the key was rejected and nothing about why. These separate the
+# causes that survive a rotation, which is the only kind worth diagnosing:
+# rotating a key you have already rotated twice does not help.
+
+
+def test_origin_reports_shape_without_the_value():
+    from app.services.diagnostics import credential_origin
+
+    rows = credential_origin(settings(finnhub_api_key="d9soje9r01qopv48g0cg"))
+    finnhub = next(row for row in rows if row.get("variable") == "FINNHUB_API_KEY")
+
+    assert finnhub["length"] == 20
+    assert "d9soje9r01qopv48g0cg" not in str(rows)
+
+
+def test_the_fingerprint_changes_with_the_key_and_reveals_nothing():
+    """The check for "did the restart pick up my edit", answerable in one look."""
+    from app.services.diagnostics import credential_origin
+
+    old = credential_origin(settings(finnhub_api_key="old-key"))[1]["fingerprint"]
+    new = credential_origin(settings(finnhub_api_key="new-key"))[1]["fingerprint"]
+
+    assert old != new
+    assert len(old) == 8
+    # Stable across calls, or comparing two reports would mean nothing.
+    assert old == credential_origin(settings(finnhub_api_key="old-key"))[1]["fingerprint"]
+
+
+def test_an_os_environment_variable_is_named_as_outranking_the_file(monkeypatch):
+    """The failure that survives every rotation, and shows no sign of itself.
+
+    pydantic-settings reads the process environment before `.env`. One
+    `$env:FINNHUB_API_KEY=...` in the shell that started the server pins the
+    value for that process's life, and every later edit to `backend/.env` is
+    read, parsed, and discarded in favour of it.
+    """
+    from app.services.diagnostics import credential_origin
+
+    monkeypatch.setenv("FINNHUB_API_KEY", "set-in-the-shell")
+    monkeypatch.delenv("ALPHA_VANTAGE_API_KEY", raising=False)
+
+    rows = credential_origin(settings())
+    by_variable = {row.get("variable"): row for row in rows if "variable" in row}
+
+    assert "overrides .env" in by_variable["FINNHUB_API_KEY"]["source"]
+    assert by_variable["ALPHA_VANTAGE_API_KEY"]["source"] == "env_file"
+
+
+def test_whitespace_and_quotes_are_flagged():
+    """Both look correct in the file and are wrong on the wire."""
+    from app.services.diagnostics import credential_origin
+
+    trailing = credential_origin(settings(finnhub_api_key="abc123\n"))[1]
+    quoted = credential_origin(settings(finnhub_api_key='"abc123"'))[1]
+
+    assert trailing["has_surrounding_whitespace"]
+    assert quoted["is_quoted"]
+    assert not trailing["is_quoted"]
+
+
+def test_an_unset_key_reports_nothing_further():
+    from app.services.diagnostics import credential_origin
+
+    rows = credential_origin(settings(finnhub_api_key=None))
+
+    assert rows[1] == {"variable": "FINNHUB_API_KEY", "configured": False}
+
+
+@pytest.mark.asyncio
+async def test_the_source_report_carries_the_credential_origin(monkeypatch):
+    """It belongs in the same paste as the 401, not a round later."""
+    from app.services import diagnostics
+
+    async def fine(client, settings_obj):
+        return diagnostics.Probe("sec_edgar", True, True, "ok")
+
+    monkeypatch.setattr(diagnostics, "probe_finnhub", fine)
+    monkeypatch.setattr(diagnostics, "probe_sec", fine)
+    monkeypatch.setattr(diagnostics, "probe_alpha_vantage", fine)
+
+    report = await probe_sources(settings())
+
+    assert report["credentials"][0]["working_directory"]
+    assert any(row.get("variable") == "FINNHUB_API_KEY" for row in report["credentials"])
 
 
 # --- Feed diagnostics -------------------------------------------------------
