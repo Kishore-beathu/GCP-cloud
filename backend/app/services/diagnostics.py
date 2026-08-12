@@ -139,6 +139,112 @@ async def probe_finnhub(client: httpx.AsyncClient, settings: Settings) -> Probe:
     )
 
 
+async def probe_finnhub_endpoints(
+    client: httpx.AsyncClient, settings: Settings
+) -> list[Probe]:
+    """Probe each Finnhub endpoint the platform uses, separately.
+
+    One key does not mean one level of access. Finnhub answers an endpoint the
+    plan does not include with 401 and the words "Invalid API key" — the same
+    response as a genuinely bad credential — so a fundamentals ingest failing
+    while news ingest succeeds is unreadable from either message alone.
+    Probing each path turns "the key is broken" into "the key works for these
+    three and not those two", which is the difference between editing .env and
+    accepting a coverage limit.
+    """
+    if not settings.finnhub_api_key:
+        return [_skip("finnhub_endpoints", "FINNHUB_API_KEY")]
+
+    today = date.today()
+    endpoints = (
+        ("finnhub:company-news", "/company-news", {
+            "symbol": PROBE_SYMBOL,
+            "from": (today - timedelta(days=7)).isoformat(),
+            "to": today.isoformat(),
+        }),
+        ("finnhub:profile2", "/stock/profile2", {"symbol": PROBE_SYMBOL}),
+        ("finnhub:earnings", "/stock/earnings", {"symbol": PROBE_SYMBOL}),
+        ("finnhub:recommendation", "/stock/recommendation", {"symbol": PROBE_SYMBOL}),
+        ("finnhub:earnings-calendar", "/calendar/earnings", {
+            "from": today.isoformat(),
+            "to": (today + timedelta(days=7)).isoformat(),
+        }),
+    )
+
+    probes: list[Probe] = []
+    for name, path, params in endpoints:
+        started = time.perf_counter()
+        try:
+            response = await client.get(
+                f"https://finnhub.io/api/v1{path}",
+                params={**params, "token": settings.finnhub_api_key},
+                timeout=20.0,
+            )
+        except httpx.HTTPError as exc:
+            probes.append(Probe(name, True, False, f"Network error: {exc}"))
+            continue
+
+        elapsed = int((time.perf_counter() - started) * 1000)
+        secrets = secrets_from(settings)
+
+        if response.status_code in (401, 403):
+            probes.append(
+                Probe(
+                    name,
+                    True,
+                    False,
+                    redact(
+                        f"HTTP {response.status_code}. On Finnhub this means either a "
+                        f"bad key or an endpoint your plan excludes — if other rows "
+                        f"here succeed, it is the plan. Vendor said: "
+                        f"{response.text[:160]}",
+                        secrets,
+                    ),
+                    latency_ms=elapsed,
+                )
+            )
+            continue
+        if response.status_code == 429:
+            probes.append(Probe(name, True, False, "Rate limited (HTTP 429).", latency_ms=elapsed))
+            continue
+        if response.status_code != 200:
+            probes.append(
+                Probe(
+                    name, True, False,
+                    redact(f"HTTP {response.status_code}: {response.text[:160]}", secrets),
+                    latency_ms=elapsed,
+                )
+            )
+            continue
+
+        try:
+            payload = response.json()
+        except ValueError:
+            probes.append(Probe(name, True, False, "Returned non-JSON.", latency_ms=elapsed))
+            continue
+
+        count = (
+            len(payload)
+            if isinstance(payload, list)
+            else len(payload.get("earningsCalendar", []) or [])
+            if isinstance(payload, dict) and "earningsCalendar" in payload
+            else (1 if payload else 0)
+        )
+        probes.append(
+            Probe(
+                name,
+                True,
+                bool(count),
+                f"Reachable, {count} item(s) for {PROBE_SYMBOL}."
+                if count
+                else "Reachable but empty — the plan may not include this data.",
+                items=count,
+                latency_ms=elapsed,
+            )
+        )
+    return probes
+
+
 async def probe_alpha_vantage(client: httpx.AsyncClient, settings: Settings) -> Probe:
     """Ask Alpha Vantage for one quote, surfacing its Note/Information wording."""
     if not settings.alpha_vantage_api_key:
@@ -232,6 +338,7 @@ async def probe_sources(settings: Settings) -> dict:
         probes = [
             await probe_sec(client, settings),
             await probe_finnhub(client, settings),
+            *await probe_finnhub_endpoints(client, settings),
             await probe_alpha_vantage(client, settings),
         ]
 

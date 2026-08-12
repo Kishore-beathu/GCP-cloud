@@ -34,6 +34,11 @@ def client_returning(response: httpx.Response) -> httpx.AsyncClient:
     return httpx.AsyncClient(transport=httpx.MockTransport(lambda request: response))
 
 
+def client_handling(handler) -> httpx.AsyncClient:
+    """A client whose reply depends on the request, for multi-endpoint probes."""
+    return httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+
 # --- Finnhub ----------------------------------------------------------------
 
 
@@ -156,8 +161,12 @@ async def test_probe_sources_partitions_healthy_and_failing(monkeypatch):
     async def broken(client, settings_obj):
         return diagnostics.Probe("finnhub_news", True, False, "HTTP 401")
 
+    async def no_endpoints(client, settings_obj):
+        return []
+
     monkeypatch.setattr(diagnostics, "probe_sec", ok)
     monkeypatch.setattr(diagnostics, "probe_finnhub", broken)
+    monkeypatch.setattr(diagnostics, "probe_finnhub_endpoints", no_endpoints)
     monkeypatch.setattr(
         diagnostics,
         "probe_alpha_vantage",
@@ -338,3 +347,47 @@ async def test_feed_probe_flags_a_changed_feed_shape():
     # Naming what came back separates an HTML error page from a moved element.
     assert "root element is <html>" in probe.detail
     assert "not a feed" in probe.detail
+
+
+@pytest.mark.asyncio
+async def test_each_finnhub_endpoint_is_probed_separately():
+    """One key does not mean one level of access.
+
+    Finnhub answers an endpoint the plan excludes with 401 and the words
+    "Invalid API key" — the same response as a genuinely bad credential. A
+    fundamentals ingest failing while news ingest succeeds is unreadable from
+    either message alone, so each path is asked on its own.
+    """
+    from app.config import Settings
+    from app.services.diagnostics import probe_finnhub_endpoints
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if "company-news" in str(request.url):
+            return httpx.Response(200, json=[{"headline": "a"}, {"headline": "b"}])
+        return httpx.Response(401, json={"error": "Invalid API key"})
+
+    settings = Settings(finnhub_api_key="test-key")
+    async with client_handling(handler) as client:
+        probes = await probe_finnhub_endpoints(client, settings)
+
+    by_name = {probe.source: probe for probe in probes}
+    assert by_name["finnhub:company-news"].ok is True
+    assert by_name["finnhub:profile2"].ok is False
+    # The message has to name the ambiguity rather than asserting one cause.
+    assert "plan" in by_name["finnhub:profile2"].detail
+
+
+@pytest.mark.asyncio
+async def test_a_probe_never_echoes_the_key_back():
+    """Vendors quote the key at you; this report exists to be pasted."""
+    from app.config import Settings
+    from app.services.diagnostics import probe_finnhub_endpoints
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(401, text='{"error":"Invalid API key sk-secret-value-123"}')
+
+    settings = Settings(finnhub_api_key="sk-secret-value-123")
+    async with client_handling(handler) as client:
+        probes = await probe_finnhub_endpoints(client, settings)
+
+    assert all("sk-secret-value-123" not in probe.detail for probe in probes)
