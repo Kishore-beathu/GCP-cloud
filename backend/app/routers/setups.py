@@ -43,6 +43,14 @@ FETCH_CONCURRENCY = 6
 # excluded from signals unless asked for explicitly.
 STALE_AFTER_MINUTES = 30
 
+# Bar age is not only about whether a market is open. Yahoo delays non-US
+# exchanges by roughly 15-20 minutes, so a Tokyo or Seoul signal describes the
+# tape as it stood a quarter of an hour ago — and these setups carry stops a
+# fraction of a percent wide, which that much drift goes straight through. The
+# age travels with every signal so nobody reads a delayed quote as a live one,
+# and this is the default ceiling for calling one actionable.
+ACTIONABLE_BAR_AGE_MINUTES = 10
+
 
 @router.get("", summary="Which intraday setups are triggering right now")
 async def scan(
@@ -69,6 +77,14 @@ async def scan(
     ),
     include_stale: bool = Query(
         default=False, description="Include symbols whose market is not trading now"
+    ),
+    max_bar_age_minutes: float = Query(
+        default=ACTIONABLE_BAR_AGE_MINUTES,
+        gt=0,
+        description=(
+            "Signals built on bars older than this are reported as not "
+            "actionable. Yahoo delays non-US venues 15-20 minutes."
+        ),
     ),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
@@ -124,9 +140,20 @@ async def scan(
             if setup
             else setups.evaluate_all(symbol, bars, previous_closes.get(symbol))
         )
+        age = round(_minutes_old(bars), 1)
         for evaluation in evaluations:
             if evaluation.signal:
                 payload = evaluation.signal.as_dict()
+                # The entry is the last bar's close. If that bar is fifteen
+                # minutes old the price has moved on, and a stop a quarter of a
+                # percent wide has no chance of surviving the difference.
+                payload["bars_minutes_old"] = age
+                payload["actionable"] = age <= max_bar_age_minutes
+                if not payload["actionable"]:
+                    payload["note"] = (
+                        f"Built on a bar {age:.0f} minutes old — the entry price "
+                        "is not current. Non-US venues are delayed on this feed."
+                    )
                 if account_equity:
                     payload["position"] = setups.position_size(
                         account_equity,
@@ -144,14 +171,17 @@ async def scan(
         "stale_markets": stale,
         "window": WINDOW,
         "signals": signals,
+        "actionable_signals": sum(1 for item in signals if item["actionable"]),
         "considered": considered if include_failed else [],
         "caveat": (
             "Live conditions, not a forecast and not a track record. Intraday "
             "bars are fetched and never stored, so these setups cannot be run "
             "through GET /scores/validation the way the daily score is — their "
             "hit rate on this universe is unmeasured. Symbols in stale_markets "
-            "are not trading right now and were skipped. Levels come from the "
-            "chart; sizing assumes the stop is honoured."
+            "are not trading right now and were skipped. A signal with "
+            "actionable=false was built on a delayed bar and its entry price is "
+            "not current. Levels come from the chart; sizing assumes the stop "
+            "is honoured."
         ),
     }
 
@@ -326,6 +356,7 @@ async def board(
                     "setup": evaluation.setup,
                     "live": live,
                     "bars_minutes_old": round(age, 1),
+                    "actionable": age <= ACTIONABLE_BAR_AGE_MINUTES,
                     "passed": len(passed),
                     "total": len(evaluation.checks),
                     "triggered": evaluation.signal is not None,
@@ -354,7 +385,9 @@ async def board(
             "Conditions as they stand, not a forecast. Rows marked live=false "
             "come from a market that is closed right now — most of this "
             "universe is listed outside the US — and are excluded unless "
-            "include_stale=true. Nothing here has a measured hit rate."
+            "include_stale=true. Rows with actionable=false are built on a bar "
+            "old enough that the entry price has moved on: this feed delays "
+            "non-US venues 15-20 minutes. Nothing here has a measured hit rate."
         ),
     }
 

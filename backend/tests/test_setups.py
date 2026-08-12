@@ -438,7 +438,7 @@ async def test_scan_can_explain_why_nothing_fired(client, seeded_stocks, monkeyp
     """Otherwise a quiet day is indistinguishable from a broken scanner."""
 
     async def _flat(symbol, window):
-        return [bar(index * 5, 100.0) for index in range(20)]
+        return now_ending([bar(index * 5, 100.0) for index in range(20)])
 
     monkeypatch.setattr("app.routers.setups.fetch_intraday", _flat)
 
@@ -624,3 +624,90 @@ async def test_min_passed_filters_the_board_to_near_misses(client, seeded_stocks
     assert body["rows"] == []
     # The scan still happened; the filter is on presentation, not on work.
     assert body["scanned"] >= 1
+
+
+@pytest.mark.asyncio
+async def test_a_signal_carries_the_age_of_the_bar_it_was_built_on(
+    client, db, seeded_stocks, monkeypatch
+):
+    """A delayed quote must not read as a live one.
+
+    Yahoo delays non-US venues 15-20 minutes, and these setups carry stops a
+    fraction of a percent wide — the entry price on a quarter-hour-old bar is
+    not obtainable. The scan showed no age at all, so a Tokyo signal looked
+    exactly as fresh as a New York one.
+    """
+    from datetime import datetime as dt
+
+    from app.models import StockPrice
+
+    stock = seeded_stocks[0]
+    session = _dip_and_rip_session()
+    # Shift so the newest bar is a quarter of an hour old: open market, stale
+    # feed. This is the Seoul and Taipei case from a real scan.
+    shift = (dt.now(timezone.utc) - timedelta(minutes=15)) - session[-1].at
+    delayed = [
+        Bar(
+            at=item.at + shift,
+            close=item.close,
+            open=item.open,
+            high=item.high,
+            low=item.low,
+            volume=item.volume,
+        )
+        for item in session
+    ]
+
+    db.add(
+        StockPrice(
+            ticker_id=stock.id,
+            close=100.0,
+            price_date=delayed[-1].at - timedelta(days=1),
+            source="test",
+        )
+    )
+    await db.commit()
+
+    async def _delayed(symbol, window):
+        return delayed
+
+    monkeypatch.setattr("app.routers.setups.fetch_intraday", _delayed)
+
+    body = (await client.get(f"/setups?ticker={stock.ticker}")).json()
+
+    assert body["signals"], body
+    signal = body["signals"][0]
+    assert signal["bars_minutes_old"] >= 14
+    assert signal["actionable"] is False
+    assert "not current" in signal["note"]
+    assert body["actionable_signals"] == 0
+
+
+@pytest.mark.asyncio
+async def test_a_fresh_signal_is_marked_actionable(client, db, seeded_stocks, monkeypatch):
+    from datetime import datetime as dt
+
+    from app.models import StockPrice
+
+    stock = seeded_stocks[0]
+    session = now_ending(_dip_and_rip_session())
+    db.add(
+        StockPrice(
+            ticker_id=stock.id,
+            close=100.0,
+            price_date=session[-1].at - timedelta(days=1),
+            source="test",
+        )
+    )
+    await db.commit()
+
+    async def _fresh(symbol, window):
+        return session
+
+    monkeypatch.setattr("app.routers.setups.fetch_intraday", _fresh)
+
+    body = (await client.get(f"/setups?ticker={stock.ticker}")).json()
+
+    assert body["signals"][0]["actionable"] is True
+    assert "note" not in body["signals"][0]
+    assert body["actionable_signals"] == 1
