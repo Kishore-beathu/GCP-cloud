@@ -222,6 +222,13 @@ class Settings(BaseSettings):
     # after being told to slow down is what sustains a rate limit.
     finnhub_stream_rate_limit_backoff_seconds: float = 60.0
 
+    # Fundamentals and the forward calendar change on a slower clock than news:
+    # a share count moves on a buyback, an earnings date when the company
+    # announces one. Polling either every few minutes would spend the request
+    # budget re-reading numbers that had not changed.
+    fundamentals_interval_hours: int = 12
+    calendar_interval_hours: int = 6
+
     # --- Notification channels ----------------------------------------------
     # Each channel activates only when configured; alerts naming an
     # unconfigured channel still deliver in-app and log the gap.

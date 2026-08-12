@@ -41,7 +41,7 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import NewsArticle, SentimentScore, Stock, StockPrice
+from app.models import EarningsReport, NewsArticle, SentimentScore, Stock, StockPrice
 from app.services import sectors, technicals
 from app.services.technicals import Technicals
 
@@ -90,6 +90,15 @@ class StockScore:
     # 52-week range wants 252 sessions — so it was ranked without that factor
     # and the rest were reweighted to fill the gap.
     technical_coverage: float = 0.0
+    # Reported, not blended. See FUNDAMENTAL_WEIGHTS.
+    fundamental_score: float | None = None
+    # Kept out of `factors` on purpose. That list is the score's arithmetic —
+    # every entry's contribution is part of the number — and these contribute
+    # nothing yet. Mixed in, a 0.55-weighted surprise would sort above every
+    # technical factor in a "what moved this score" view while moving it by
+    # zero, which is exactly the kind of confident-looking wrong thing this
+    # design exists to avoid.
+    fundamental_factors: list[Factor] = field(default_factory=list)
     rank: int = 0
     universe_size: int = 0
     sector_rank: int = 0
@@ -109,6 +118,8 @@ class StockScore:
             "sentiment_score": self.sentiment_score,
             "sentiment_confidence": self.sentiment_confidence,
             "technical_coverage": self.technical_coverage,
+            "fundamental_score": self.fundamental_score,
+            "fundamental_factors": [factor.as_dict() for factor in self.fundamental_factors],
             "rank": self.rank,
             "universe_size": self.universe_size,
             "sector_rank": self.sector_rank,
@@ -156,6 +167,24 @@ PILLAR_WEIGHTS = {"technical": 0.6, "sentiment": 0.4}
 # articles. This is a statement about information, not a fitted parameter — it
 # is deliberately not tuned against the validation window it is measured in.
 SENTIMENT_FULL_WEIGHT_ARTICLES = 5
+
+# The fundamental factors, and the reason they carry no pillar weight.
+#
+# Earnings surprise and analyst revisions have stronger published evidence
+# behind them than anything else here — post-earnings drift and revisions
+# momentum are among the most replicated effects in the literature. That is a
+# reason to measure them, not to trust them: the sentiment pillar was given
+# 0.4 on the equally reasonable assumption that news matters, and twelve
+# periods later the honest reading was that it had not been shown to.
+#
+# So these are computed, reported on every score, and ranked as their own
+# strategy inside validate(). If that measurement holds up on this universe
+# they earn a weight. Until then the blend is unchanged and the number is
+# there to be checked rather than acted on.
+FUNDAMENTAL_WEIGHTS: dict[str, tuple[str, float, str]] = {
+    "earnings_surprise_pct": ("Earnings surprise", 0.55, "Last quarter versus consensus"),
+    "analyst_revision": ("Analyst revision", 0.45, "Opinion shift over the last month"),
+}
 
 # Below this many sessions the technical pillar is not computed at all. Twenty
 # sessions is the shortest window any of its factors needs.
@@ -213,6 +242,7 @@ class _Raw:
     technicals: Technicals
     sentiment: dict[str, float | None]
     news_count: int
+    fundamentals: dict[str, float | None] = field(default_factory=dict)
 
 
 def percentile_ranks(values: dict[str, float | None]) -> dict[str, float | None]:
@@ -294,15 +324,31 @@ async def _load_inputs(db: AsyncSession, days: int) -> list[_Raw]:
     for ticker_id, published_at, score, sentiment in news_rows:
         news.setdefault(ticker_id, []).append((published_at, score or 0.0, sentiment))
 
+    # Reported per symbol but not blended — see FUNDAMENTAL_WEIGHTS.
+    from app.services import fundamentals as fundamentals_service
+
+    factors = await fundamentals_service.load_all(db)
+
     return [
         _Raw(
             stock=stock,
             technicals=technicals.compute(series.get(stock.id, [])),
             sentiment=_summarise_news(news.get(stock.id, []), days),
             news_count=len(news.get(stock.id, [])),
+            fundamentals=_fundamental_values(factors.get(stock.id)),
         )
         for stock in stocks
     ]
+
+
+def _fundamental_values(factor) -> dict[str, float | None]:
+    """The stored fundamentals, keyed to match FUNDAMENTAL_WEIGHTS."""
+    if factor is None:
+        return {key: None for key in FUNDAMENTAL_WEIGHTS}
+    return {
+        "earnings_surprise_pct": factor.earnings_surprise_pct,
+        "analyst_revision": factor.analyst_revision,
+    }
 
 
 def _summarise_news(
@@ -428,8 +474,16 @@ async def score_universe(db: AsyncSession, days: int = 30) -> list[StockScore]:
         for key in SENTIMENT_WEIGHTS
     }
 
+    fundamental_values = {
+        key: {raw.stock.ticker: raw.fundamentals.get(key) for raw in inputs}
+        for key in FUNDAMENTAL_WEIGHTS
+    }
+
     technical_ranks = {key: percentile_ranks(values) for key, values in technical_values.items()}
     sentiment_ranks = {key: percentile_ranks(values) for key, values in sentiment_values.items()}
+    fundamental_ranks = {
+        key: percentile_ranks(values) for key, values in fundamental_values.items()
+    }
 
     scored: list[StockScore] = []
     for raw in inputs:
@@ -441,6 +495,10 @@ async def score_universe(db: AsyncSession, days: int = 30) -> list[StockScore]:
         )
         sentiment, sentiment_factors, _ = _pillar(
             raw, sentiment_ranks, SENTIMENT_WEIGHTS, raw.sentiment
+        )
+        # Computed and reported; deliberately absent from _blend below.
+        fundamental, fundamental_factors, _ = _pillar(
+            raw, fundamental_ranks, FUNDAMENTAL_WEIGHTS, raw.fundamentals
         )
 
         blended = _blend(technical, sentiment, raw.news_count)
@@ -458,6 +516,8 @@ async def score_universe(db: AsyncSession, days: int = 30) -> list[StockScore]:
                 sentiment_score=sentiment,
                 sentiment_confidence=round(sentiment_confidence(raw.news_count), 2),
                 technical_coverage=technical_weight,
+                fundamental_score=fundamental,
+                fundamental_factors=fundamental_factors,
                 # What share of the intended inputs this score actually used.
                 coverage=round(weight_total, 2),
                 factors=sorted(
@@ -603,6 +663,7 @@ def _rank_at(
     history: dict[str, list[tuple[datetime, float]]],
     news: dict[str, list[tuple[datetime, float, str]]],
     news_days: int,
+    earnings: dict[str, list[tuple[datetime, float]]] | None = None,
 ) -> dict[str, list[tuple[str, float]]]:
     """Rank the universe as it stood at ``as_of``, three ways.
 
@@ -639,9 +700,23 @@ def _rank_at(
         for key in SENTIMENT_WEIGHTS
     }
 
+    # Earnings surprise as it stood at as_of: the most recent quarter reported
+    # *before* that date. Using the latest stored figure instead would leak a
+    # number that had not been published yet, which is the classic way a
+    # backtest flatters a factor it should be testing.
+    surprises: dict[str, float] = {}
+    for symbol in tech_inputs:
+        past = [row for row in (earnings or {}).get(symbol, []) if row[0] <= as_of]
+        if past:
+            surprises[symbol] = max(past, key=lambda row: row[0])[1]
+    surprise_ranks = percentile_ranks(
+        {symbol: surprises.get(symbol) for symbol in tech_inputs}
+    )
+
     rankings: dict[str, list[tuple[str, float]]] = {
         "technical": [],
         "sentiment": [],
+        "fundamental": [],
         "blended": [],
     }
 
@@ -653,6 +728,12 @@ def _rank_at(
             rankings["technical"].append((symbol, technical))
         if sentiment is not None:
             rankings["sentiment"].append((symbol, sentiment))
+        # Ranked on its own so it can be judged before it is weighted. It is
+        # deliberately not in `blended`: the live score does not use it, and a
+        # backtest of a blend nobody is served would measure nothing.
+        fundamental = surprise_ranks.get(symbol)
+        if fundamental is not None:
+            rankings["fundamental"].append((symbol, fundamental))
 
         blended = _blend(technical, sentiment, sent_counts.get(symbol, 0))
         if blended is not None:
@@ -774,6 +855,25 @@ async def validate(
         )
         news.setdefault(by_id[ticker_id], []).append((moment, score or 0.0, sentiment))
 
+    # Reported quarters, for the fundamental strategy. Keyed by the period the
+    # figures describe rather than when the vendor row was written, so "what
+    # was known at as_of" means what had actually been reported by then.
+    earnings: dict[str, list[tuple[datetime, float]]] = {}
+    for ticker_id, period, surprise in (
+        await db.execute(
+            select(
+                EarningsReport.ticker_id,
+                EarningsReport.period,
+                EarningsReport.eps_surprise_pct,
+            ).where(
+                EarningsReport.ticker_id.in_(by_id),
+                EarningsReport.eps_surprise_pct.is_not(None),
+            )
+        )
+    ).all():
+        moment = period if period.tzinfo else period.replace(tzinfo=timezone.utc)
+        earnings.setdefault(by_id[ticker_id], []).append((moment, surprise))
+
     results: list[dict] = []
     for index in range(periods):
         as_of = now - timedelta(days=as_of_days_ago + index * step_days)
@@ -790,7 +890,7 @@ async def validate(
         if len(forward) < 10:
             continue
 
-        rankings = _rank_at(as_of, history, news, news_days=30)
+        rankings = _rank_at(as_of, history, news, news_days=30, earnings=earnings)
         period = {"as_of": as_of.date().isoformat(), "symbols": len(forward)}
         for strategy, ranked in rankings.items():
             period[strategy] = _spread(ranked, forward)
@@ -809,7 +909,7 @@ async def validate(
         }
 
     summary: dict[str, dict] = {}
-    for strategy in ("technical", "sentiment", "blended"):
+    for strategy in ("technical", "sentiment", "fundamental", "blended"):
         spreads = [
             period[strategy]["spread"]
             for period in results

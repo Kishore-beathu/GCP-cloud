@@ -283,6 +283,28 @@ async def price_push_job() -> None:
             )
 
 
+async def fundamentals_job() -> None:
+    """Refresh market cap, earnings and analyst trends for stale symbols."""
+    async with get_session_factory()() as session:
+        try:
+            from app.services.fundamentals import ingest_fundamentals
+
+            await ingest_fundamentals(session)
+        except Exception:
+            logger.exception("Fundamentals job failed")
+
+
+async def calendar_job() -> None:
+    """Rebuild the forward catalyst calendar."""
+    async with get_session_factory()() as session:
+        try:
+            from app.services.catalysts import refresh_calendar
+
+            await refresh_calendar(session)
+        except Exception:
+            logger.exception("Catalyst calendar job failed")
+
+
 async def cleanup_job() -> None:
     """Drop news and prices older than the retention window."""
     settings = get_settings()
@@ -422,6 +444,37 @@ def start_scheduler() -> AsyncIOScheduler | None:
             # first; skipping a cycle is cheaper than doubling the write load.
             misfire_grace_time=30,
         )
+
+    # Fundamentals and the calendar move on a different clock from news: a
+    # share count changes on a buyback, an earnings date when the company
+    # announces one. Polling either every few minutes would spend the request
+    # budget re-reading numbers that had not changed.
+    scheduler.add_job(
+        fundamentals_job,
+        IntervalTrigger(
+            hours=settings.fundamentals_interval_hours,
+            start_date=datetime.now(timezone.utc) + timedelta(minutes=2),
+            jitter=300,
+        ),
+        id="fundamentals",
+        name="Fundamentals and earnings",
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=600,
+    )
+    scheduler.add_job(
+        calendar_job,
+        IntervalTrigger(
+            hours=settings.calendar_interval_hours,
+            start_date=datetime.now(timezone.utc) + timedelta(minutes=3),
+            jitter=300,
+        ),
+        id="calendar",
+        name="Forward catalyst calendar",
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=600,
+    )
 
     scheduler.add_job(
         price_push_job,

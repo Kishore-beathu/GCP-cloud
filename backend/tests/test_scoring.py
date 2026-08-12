@@ -560,3 +560,93 @@ async def test_validation_reports_the_dispersed_subset(db):
     # Every symbol scores differently here, so every measured period qualifies.
     assert technical["well_dispersed"]["periods"] == technical["periods"]
     assert technical["well_dispersed"]["mean_spread"] is not None
+
+
+# --- Fundamentals: measured, not weighted ------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_fundamentals_are_reported_but_do_not_move_the_score(db, seeded_stocks):
+    """The whole discipline, in one assertion.
+
+    Earnings surprise has stronger published evidence than anything else here,
+    which is a reason to measure it rather than to trust it — the sentiment
+    pillar got 0.4 on the same reasoning and twelve periods later had not
+    earned it. So the factor is computed and shown, and the blend is untouched
+    until validate() says otherwise.
+    """
+    from app.models import EarningsReport
+
+    beat, missed = seeded_stocks
+    for stock in (beat, missed):
+        await add_prices(db, stock, [100.0 * 1.002**day for day in range(80)])
+    db.add_all(
+        [
+            EarningsReport(
+                ticker_id=beat.id,
+                period=datetime.now(timezone.utc) - timedelta(days=10),
+                eps_surprise_pct=25.0,
+            ),
+            EarningsReport(
+                ticker_id=missed.id,
+                period=datetime.now(timezone.utc) - timedelta(days=10),
+                eps_surprise_pct=-25.0,
+            ),
+        ]
+    )
+    await db.commit()
+
+    scored = {item.ticker: item for item in await scoring.score_universe(db)}
+
+    # Reported, and ranked against each other.
+    assert scored[beat.ticker].fundamental_score > scored[missed.ticker].fundamental_score
+    assert scored[beat.ticker].fundamental_factors
+
+    # But absent from the score's arithmetic: `factors` is the list whose
+    # contributions sum to the score, and a factor with no weight in it would
+    # make that claim false.
+    assert all(
+        factor.key not in scoring.FUNDAMENTAL_WEIGHTS
+        for factor in scored[beat.ticker].factors
+    )
+    assert "fundamental" not in scoring.PILLAR_WEIGHTS
+
+
+@pytest.mark.asyncio
+async def test_the_backtest_only_sees_quarters_reported_by_then(db):
+    """Lookahead is how a backtest flatters the factor it is testing.
+
+    Ranking on the *latest* stored surprise would hand every past date a
+    number that had not been published yet — and earnings surprise would look
+    superb for exactly the wrong reason.
+    """
+    from app.models import EarningsReport
+
+    stocks = [
+        Stock(ticker=f"E{index:02d}", company_name=f"Earn {index}", sector="pharma")
+        for index in range(12)
+    ]
+    db.add_all(stocks)
+    await db.commit()
+    for stock in stocks:
+        await db.refresh(stock)
+
+    now = datetime.now(timezone.utc)
+    for index, stock in enumerate(stocks):
+        await add_prices(db, stock, [100.0 * (0.998 + index * 0.0004) ** day for day in range(220)], end=now)
+        # Reported *yesterday*: far later than any as_of the validation uses.
+        db.add(
+            EarningsReport(
+                ticker_id=stock.id,
+                period=now - timedelta(days=1),
+                eps_surprise_pct=float(index * 10),
+            )
+        )
+    await db.commit()
+
+    result = await scoring.validate(db, as_of_days_ago=60, horizon_days=15, periods=2, step_days=20)
+
+    # Every surprise postdates every as_of, so the fundamental strategy has
+    # nothing to rank and must report that rather than borrowing the future.
+    fundamental = result["summary"].get("fundamental", {})
+    assert fundamental.get("periods", 0) == 0

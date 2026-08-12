@@ -82,7 +82,17 @@ class Stock(Base):
     # ISO 4217, except London's GBp: prices there are quoted in pence.
     currency: Mapped[str | None] = mapped_column(String(3))
     cik: Mapped[str | None] = mapped_column(String(16), index=True)
+    # Market cap has been on this table since the first migration and nothing
+    # ever wrote to it, so every row read NULL while the API cheerfully served
+    # the field. Populated from the vendor profile now — see
+    # services/fundamentals.py — which is what makes a small/mid-cap universe
+    # filter expressible at all.
     market_cap: Mapped[float | None] = mapped_column(Float)
+    shares_outstanding: Mapped[float | None] = mapped_column(Float)
+    # When the two above were last refreshed. Stored because a market cap of
+    # unknown age is worse than none: it invites a filter that silently uses
+    # last quarter's share count.
+    fundamentals_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, server_default="1")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
@@ -291,3 +301,122 @@ class AlertHistory(Base):
     payload: Mapped[dict] = mapped_column(JSON, default=dict)
 
     alert: Mapped[UserAlert] = relationship(back_populates="history")
+
+
+class EarningsReport(Base):
+    """One reported quarter: what was expected, and what arrived.
+
+    Earnings surprise and the drift that follows it are among the most
+    replicated effects in the published literature, and this platform had no
+    way to express either — the news pipeline could see that a company
+    *reported*, never whether the number beat.
+    """
+
+    __tablename__ = "earnings_reports"
+    __table_args__ = (
+        UniqueConstraint("ticker_id", "period", name="uq_earnings_ticker_period"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    ticker_id: Mapped[int] = mapped_column(
+        ForeignKey("stocks.id", ondelete="CASCADE"), index=True
+    )
+    # The fiscal period the figures describe, as the vendor dates it.
+    period: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    reported_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), index=True
+    )
+    eps_actual: Mapped[float | None] = mapped_column(Float)
+    eps_estimate: Mapped[float | None] = mapped_column(Float)
+    revenue_actual: Mapped[float | None] = mapped_column(Float)
+    revenue_estimate: Mapped[float | None] = mapped_column(Float)
+    # Surprise as a percentage of the estimate. Stored rather than derived on
+    # read because the denominator needs care: an estimate of zero or a
+    # negative one makes the ordinary formula meaningless, and that judgement
+    # belongs in one place.
+    eps_surprise_pct: Mapped[float | None] = mapped_column(Float)
+    source: Mapped[str] = mapped_column(String(32), default="finnhub")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+    stock: Mapped[Stock] = relationship()
+
+
+class AnalystTrend(Base):
+    """A month's analyst recommendation mix for one symbol.
+
+    A free stand-in for estimate revisions, which need a paid feed. The counts
+    themselves are near-useless — analysts are permanently bullish in
+    aggregate — but the *change* between months is a real signal about which
+    way opinion is moving, and that is what the scoring reads.
+    """
+
+    __tablename__ = "analyst_trends"
+    __table_args__ = (
+        UniqueConstraint("ticker_id", "period", name="uq_analyst_trend_ticker_period"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    ticker_id: Mapped[int] = mapped_column(
+        ForeignKey("stocks.id", ondelete="CASCADE"), index=True
+    )
+    period: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    strong_buy: Mapped[int] = mapped_column(Integer, default=0)
+    buy: Mapped[int] = mapped_column(Integer, default=0)
+    hold: Mapped[int] = mapped_column(Integer, default=0)
+    sell: Mapped[int] = mapped_column(Integer, default=0)
+    strong_sell: Mapped[int] = mapped_column(Integer, default=0)
+    source: Mapped[str] = mapped_column(String(32), default="finnhub")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+    stock: Mapped[Stock] = relationship()
+
+
+class CatalystEvent(Base):
+    """Something scheduled to happen, with a date in the future.
+
+    Everything else stored here is backward-looking: what was filed, what was
+    published, what the price did. A catalyst is the opposite — it is known in
+    advance and unresolved, which is the only kind of information that answers
+    "what should I be watching tomorrow".
+    """
+
+    __tablename__ = "catalyst_events"
+    __table_args__ = (
+        UniqueConstraint(
+            "ticker_id", "kind", "expected_at", "external_id",
+            name="uq_catalyst_identity",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    ticker_id: Mapped[int] = mapped_column(
+        ForeignKey("stocks.id", ondelete="CASCADE"), index=True
+    )
+    # "earnings", "trial_readout". Deliberately a string rather than an enum:
+    # the set will grow as sources are added, and a migration per catalyst type
+    # would discourage adding them.
+    kind: Mapped[str] = mapped_column(String(32), index=True)
+    expected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    # How firmly the date is known. An earnings date confirmed by the company
+    # is not the same claim as a trial's estimated primary completion, and a
+    # calendar that presents them identically is misleading about both.
+    confidence: Mapped[str] = mapped_column(String(16), default="estimated")
+    title: Mapped[str] = mapped_column(String(512))
+    detail: Mapped[str | None] = mapped_column(Text)
+    url: Mapped[str | None] = mapped_column(String(1024))
+    # The vendor's own identifier, so re-ingesting updates rather than
+    # duplicating when a date moves.
+    external_id: Mapped[str] = mapped_column(String(128), default="")
+    source: Mapped[str] = mapped_column(String(32), index=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    stock: Mapped[Stock] = relationship()

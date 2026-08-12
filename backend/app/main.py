@@ -22,6 +22,7 @@ from app.routers import (
     alerts,
     auth,
     backtest,
+    fundamentals,
     news,
     portfolios,
     scores,
@@ -116,6 +117,7 @@ def create_app() -> FastAPI:
     app.include_router(stocks.router, dependencies=[Depends(require_auth)])
     app.include_router(alerts.router, dependencies=[Depends(require_auth)])
     app.include_router(backtest.router, dependencies=[Depends(require_auth)])
+    app.include_router(fundamentals.router, dependencies=[Depends(require_auth)])
     app.include_router(scores.router, dependencies=[Depends(require_auth)])
     app.include_router(setups.router, dependencies=[Depends(require_auth)])
     app.include_router(portfolios.router, dependencies=[Depends(require_auth)])

@@ -274,3 +274,192 @@ async def update_finnhub_quotes(
 
     logger.info("Finnhub quote refresh complete: %s", totals)
     return totals
+
+
+# --- Fundamentals, earnings and analyst opinion -------------------------------
+# All three are on the free tier for US symbols and absent for most others,
+# which is stated rather than discovered: a European listing simply returns
+# nothing here, and the caller reports it as uncovered rather than as an error.
+
+
+async def _get(
+    client: httpx.AsyncClient, path: str, params: dict, label: str
+) -> object | None:
+    """One Finnhub GET, with the refusal rules the rest of this module uses.
+
+    A 401/403 is about the account and applies to every subsequent call, so it
+    raises and stops the batch. Anything else degrades to None: a symbol the
+    free tier does not cover is an ordinary outcome, not a failure.
+    """
+    try:
+        response = await client.get(f"{BASE_URL}{path}", params=params, timeout=30.0)
+        if response.status_code == 429:
+            raise FinnhubRateLimited(label)
+        if response.status_code in (401, 403):
+            raise FinnhubRejected(
+                f"HTTP {response.status_code} for {label}: {response.text[:200]}"
+            )
+        response.raise_for_status()
+        return response.json()
+    except (FinnhubRateLimited, FinnhubRejected):
+        raise
+    except (httpx.HTTPError, ValueError) as exc:
+        logger.warning("Finnhub request failed for %s: %s", label, exc)
+        return None
+
+
+async def fetch_profile(
+    client: httpx.AsyncClient, ticker: str, api_key: str
+) -> dict | None:
+    """Company profile: market cap and shares outstanding.
+
+    Finnhub reports market cap in millions of the listing currency. It is
+    converted here so a stored value is in units, because a column holding
+    millions for one row and units for another is the kind of thing that is
+    only discovered by a filter quietly returning the wrong companies.
+    """
+    payload = await _get(
+        client, "/stock/profile2", {"symbol": ticker, "token": api_key}, ticker
+    )
+    if not isinstance(payload, dict) or not payload:
+        return None
+
+    cap_millions = payload.get("marketCapitalization")
+    shares_millions = payload.get("shareOutstanding")
+    return {
+        "market_cap": float(cap_millions) * 1_000_000 if cap_millions else None,
+        "shares_outstanding": (
+            float(shares_millions) * 1_000_000 if shares_millions else None
+        ),
+        "currency": payload.get("currency"),
+        "name": payload.get("name"),
+    }
+
+
+def _surprise_pct(actual: float | None, estimate: float | None) -> float | None:
+    """Surprise as a percentage of the estimate, where that means anything.
+
+    The ordinary formula breaks on the cases that matter most. A zero estimate
+    divides by zero. A *negative* estimate inverts the sign, so a loss-making
+    company that lost less than feared reads as a miss — which is exactly
+    backwards, and common in biotech where most of this universe's small caps
+    live. Both return None rather than a number that would be quietly wrong.
+    """
+    if actual is None or estimate is None or estimate <= 0:
+        return None
+    return round((actual - estimate) / abs(estimate) * 100, 4)
+
+
+async def fetch_earnings(
+    client: httpx.AsyncClient, ticker: str, api_key: str
+) -> list[dict]:
+    """The last few reported quarters: actual against estimate."""
+    payload = await _get(
+        client, "/stock/earnings", {"symbol": ticker, "token": api_key}, ticker
+    )
+    if not isinstance(payload, list):
+        return []
+
+    reports: list[dict] = []
+    for item in payload:
+        if not isinstance(item, dict):
+            continue
+        period = _parse_date(item.get("period"))
+        if period is None:
+            continue
+        actual, estimate = item.get("actual"), item.get("estimate")
+        reports.append(
+            {
+                "period": period,
+                "eps_actual": float(actual) if actual is not None else None,
+                "eps_estimate": float(estimate) if estimate is not None else None,
+                "eps_surprise_pct": _surprise_pct(actual, estimate),
+            }
+        )
+    return reports
+
+
+async def fetch_recommendations(
+    client: httpx.AsyncClient, ticker: str, api_key: str
+) -> list[dict]:
+    """Monthly analyst recommendation counts.
+
+    A free stand-in for estimate revisions. The counts on their own say little
+    — sell-side opinion is structurally bullish — but the month-on-month
+    change says which way it is moving, and that is what the scoring reads.
+    """
+    payload = await _get(
+        client, "/stock/recommendation", {"symbol": ticker, "token": api_key}, ticker
+    )
+    if not isinstance(payload, list):
+        return []
+
+    trends: list[dict] = []
+    for item in payload:
+        if not isinstance(item, dict):
+            continue
+        period = _parse_date(item.get("period"))
+        if period is None:
+            continue
+        trends.append(
+            {
+                "period": period,
+                "strong_buy": int(item.get("strongBuy") or 0),
+                "buy": int(item.get("buy") or 0),
+                "hold": int(item.get("hold") or 0),
+                "sell": int(item.get("sell") or 0),
+                "strong_sell": int(item.get("strongSell") or 0),
+            }
+        )
+    return trends
+
+
+async def fetch_earnings_calendar(
+    client: httpx.AsyncClient, api_key: str, from_date: date, to_date: date
+) -> list[dict]:
+    """Scheduled earnings dates across the whole market, in one call.
+
+    One request for a date range rather than one per symbol: the calendar
+    endpoint returns every company reporting in the window, and filtering to
+    the tracked universe afterwards costs nothing.
+    """
+    payload = await _get(
+        client,
+        "/calendar/earnings",
+        {"from": from_date.isoformat(), "to": to_date.isoformat(), "token": api_key},
+        "earnings calendar",
+    )
+    if not isinstance(payload, dict):
+        return []
+
+    events: list[dict] = []
+    for item in payload.get("earningsCalendar") or []:
+        if not isinstance(item, dict):
+            continue
+        when = _parse_date(item.get("date"))
+        symbol = (item.get("symbol") or "").strip().upper()
+        if when is None or not symbol:
+            continue
+        events.append(
+            {
+                "symbol": symbol,
+                "expected_at": when,
+                # "bmo" before market open, "amc" after close, "dmh" during.
+                "hour": (item.get("hour") or "").strip(),
+                "eps_estimate": item.get("epsEstimate"),
+                "revenue_estimate": item.get("revenueEstimate"),
+                "quarter": item.get("quarter"),
+                "year": item.get("year"),
+            }
+        )
+    return events
+
+
+def _parse_date(value: object) -> datetime | None:
+    """Finnhub dates arrive as YYYY-MM-DD strings; anything else is skipped."""
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        return datetime.fromisoformat(value.strip()).replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
