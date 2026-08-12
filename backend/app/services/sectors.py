@@ -138,3 +138,12 @@ def describe(group: SectorGroup) -> dict:
 def all_groups() -> tuple[SectorGroup, ...]:
     """Every group, including the catch-all, in display order."""
     return GROUPS + (OTHER,)
+
+
+def is_known_sector(sector: str) -> bool:
+    """Whether a sector is mapped to a group, for validating a filter.
+
+    A filter on an unmapped sector matches nothing, and an empty result reads
+    as "no symbols qualified" rather than "you spelled it wrong".
+    """
+    return sector.strip().lower() in _SECTOR_TO_GROUP

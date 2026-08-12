@@ -14,6 +14,10 @@ router = APIRouter(prefix="/scores", tags=["scores"])
 @router.get("", summary="Every tracked symbol, ranked best first")
 async def list_scores(
     group: str | None = Query(default=None, description="Limit to an industry group"),
+    sector: str | None = Query(
+        default=None,
+        description="Limit to one sector within a group, e.g. clinical_stage",
+    ),
     limit: int = Query(default=25, ge=1, le=500),
     min_coverage: float = Query(
         default=0.0,
@@ -34,11 +38,19 @@ async def list_scores(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"Unknown group {group!r}. Try GET /stocks/sectors.",
         )
+    if sector and not sectors.is_known_sector(sector):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Unknown sector {sector!r}. Try GET /stocks/sectors.",
+        )
 
     scored = await scoring.score_universe(db)
     if group:
         key = group.strip().lower()
         scored = [item for item in scored if item.sector_group == key]
+    if sector:
+        key = sector.strip().lower()
+        scored = [item for item in scored if (item.sector or "").lower() == key]
     if min_coverage:
         scored = [item for item in scored if item.coverage >= min_coverage]
 

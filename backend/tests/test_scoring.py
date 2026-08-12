@@ -441,6 +441,40 @@ async def test_scores_endpoint_rejects_an_unknown_group(client, seeded_stocks):
 
 
 @pytest.mark.asyncio
+async def test_scores_endpoint_filters_to_one_sector_inside_a_group(
+    client, db, seeded_stocks
+):
+    """"The clinical-stage names" is not a question a group heading can answer.
+
+    Ranking cohorts are groups on purpose — eleven sectors would leave several
+    with two or three members, and a percentile over three symbols is not a
+    percentile. Filtering is the opposite: the finer label is the useful one,
+    and without it a 50-name cohort is only reachable by reading past the
+    large caps it shares a group with.
+    """
+    first, second = seeded_stocks
+    second.sector = "clinical_stage"
+    await db.commit()
+    await add_prices(db, first, [100.0 + index for index in range(80)])
+    await add_prices(db, second, [100.0 + index * 0.5 for index in range(80)])
+
+    body = (await client.get("/scores?sector=clinical_stage")).json()
+
+    assert [item["ticker"] for item in body["scores"]] == [second.ticker]
+    # Filtered afterwards, like the group filter: rank still means rank.
+    assert body["scores"][0]["rank"] == 2
+    assert body["scores"][0]["sector"] == "clinical_stage"
+    assert body["scores"][0]["sector_group"] == "pharma_life_sciences"
+
+
+@pytest.mark.asyncio
+async def test_scores_endpoint_rejects_an_unknown_sector(client, seeded_stocks):
+    """An unmapped sector matches nothing, which reads as "none qualified"."""
+    assert (await client.get("/scores?sector=clinical")).status_code == 422
+    assert (await client.get("/scores?sector=nonsense")).status_code == 422
+
+
+@pytest.mark.asyncio
 async def test_single_score_endpoint_returns_the_factor_breakdown(client, db, seeded_stocks):
     stock = seeded_stocks[0]
     await add_prices(db, stock, [100.0 + index for index in range(80)])

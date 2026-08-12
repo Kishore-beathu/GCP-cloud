@@ -80,6 +80,11 @@ class StockScore:
     ticker: str
     company_name: str
     sector_group: str
+    # The fine-grained sector as well as its group. Ranking cohorts are groups
+    # — eleven sectors would leave several with too few members to percentile
+    # against — but filtering wants the finer one, because "the clinical-stage
+    # names" is a question the group heading cannot answer.
+    sector: str | None
     score: float
     technical_score: float | None
     sentiment_score: float | None
@@ -101,6 +106,10 @@ class StockScore:
     fundamental_factors: list[Factor] = field(default_factory=list)
     rank: int = 0
     universe_size: int = 0
+    # Named "sector" for the API's sake, but scoped to the *group* — see the
+    # cohort loop in score_universe. Ranking against eleven sectors would leave
+    # several of them with two or three members, and a percentile over three
+    # symbols is not a percentile.
     sector_rank: int = 0
     sector_size: int = 0
     coverage: float = 0.0
@@ -113,6 +122,7 @@ class StockScore:
             "ticker": self.ticker,
             "company_name": self.company_name,
             "sector_group": self.sector_group,
+            "sector": self.sector,
             "score": self.score,
             "technical_score": self.technical_score,
             "sentiment_score": self.sentiment_score,
@@ -511,6 +521,7 @@ async def score_universe(db: AsyncSession, days: int = 30) -> list[StockScore]:
                 ticker=raw.stock.ticker,
                 company_name=raw.stock.company_name,
                 sector_group=sectors.group_for(raw.stock.sector),
+                sector=raw.stock.sector,
                 score=round(composite, 2),
                 technical_score=technical,
                 sentiment_score=sentiment,
