@@ -17,7 +17,7 @@ Two details bite people repeatedly and are encoded deliberately:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, time, timezone
+from datetime import datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 # Regions are the coarse grouping a user actually filters on.
@@ -194,3 +194,77 @@ def describe(market: Market) -> dict:
         "closes": market.closes.isoformat(timespec="minutes"),
         "is_open": market.is_open(),
     }
+
+
+def next_open(market: Market, moment: datetime | None = None) -> datetime:
+    """When this venue next opens, in UTC.
+
+    Weekday and clock only, like `is_open` — there is no holiday calendar
+    here, so this can name a session that a public holiday will cancel. It is
+    used to say "the window opens in three hours", which is useful when
+    approximate and misleading only if presented as certain.
+    """
+    zone = ZoneInfo(market.timezone)
+    local = (moment or datetime.now(timezone.utc)).astimezone(zone)
+
+    candidate = local.replace(
+        hour=market.opens.hour, minute=market.opens.minute, second=0, microsecond=0
+    )
+    if candidate <= local:
+        candidate += timedelta(days=1)
+    while candidate.weekday() >= 5:
+        candidate += timedelta(days=1)
+    return candidate.astimezone(timezone.utc)
+
+
+def next_close(market: Market, moment: datetime | None = None) -> datetime:
+    """When the current or next session ends, in UTC."""
+    zone = ZoneInfo(market.timezone)
+    local = (moment or datetime.now(timezone.utc)).astimezone(zone)
+
+    candidate = local.replace(
+        hour=market.closes.hour, minute=market.closes.minute, second=0, microsecond=0
+    )
+    if candidate <= local:
+        candidate += timedelta(days=1)
+    while candidate.weekday() >= 5:
+        candidate += timedelta(days=1)
+    return candidate.astimezone(timezone.utc)
+
+
+def session_state(market: Market, tz: str = "UTC", moment: datetime | None = None) -> dict:
+    """Whether a venue is trading, and when that next changes.
+
+    Reported in a requested timezone as well as UTC, because "the window is
+    15:30-22:00" is only true in one place and the reader is rarely in the
+    exchange's own zone.
+    """
+    now = moment or datetime.now(timezone.utc)
+    zone = ZoneInfo(tz)
+    open_now = market.is_open(now)
+    changes_at = next_close(market, now) if open_now else next_open(market, now)
+
+    return {
+        "venue": market.name,
+        "is_open": open_now,
+        "session_local": f"{market.opens:%H:%M}-{market.closes:%H:%M} {market.timezone}",
+        "session_in_tz": _session_in_tz(market, zone, now),
+        "next_change_utc": changes_at.isoformat(),
+        "next_change_local": changes_at.astimezone(zone).isoformat(),
+        "minutes_until_change": round((changes_at - now).total_seconds() / 60),
+        "timezone": tz,
+    }
+
+
+def _session_in_tz(market: Market, zone: ZoneInfo, now: datetime) -> str:
+    """The venue's opening hours rendered in another zone.
+
+    Computed from a real date rather than by adding a fixed offset, so it
+    follows daylight saving on both sides instead of drifting by an hour for
+    several weeks a year.
+    """
+    venue_zone = ZoneInfo(market.timezone)
+    today = now.astimezone(venue_zone).date()
+    opens = datetime.combine(today, market.opens, tzinfo=venue_zone).astimezone(zone)
+    closes = datetime.combine(today, market.closes, tzinfo=venue_zone).astimezone(zone)
+    return f"{opens:%H:%M}-{closes:%H:%M}"

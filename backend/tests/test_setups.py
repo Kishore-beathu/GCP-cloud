@@ -711,3 +711,78 @@ async def test_a_fresh_signal_is_marked_actionable(client, db, seeded_stocks, mo
     assert body["signals"][0]["actionable"] is True
     assert "note" not in body["signals"][0]
     assert body["actionable_signals"] == 1
+
+
+# --- The tradable window -----------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_delayed_venues_are_excluded_by_default(client, db, monkeypatch):
+    """Asia and Europe are ~20 minutes behind on this feed.
+
+    A universe-wide scan run outside US hours returned triggers on Samsung and
+    TSMC whose entry prices were a quarter of an hour old — real patterns, and
+    trades nobody could take at the price shown.
+    """
+    from app.models import Stock
+
+    db.add_all(
+        [
+            Stock(ticker="MU", company_name="Micron", sector="memory"),
+            Stock(ticker="005930.KS", company_name="Samsung", sector="memory"),
+        ]
+    )
+    await db.commit()
+
+    asked: list[str] = []
+
+    async def _bars(symbol, window):
+        asked.append(symbol)
+        return now_ending(_dip_and_rip_session())
+
+    monkeypatch.setattr("app.routers.setups.fetch_intraday", _bars)
+
+    body = (await client.get("/setups?ticker=MU&ticker=005930.KS")).json()
+
+    assert asked == ["MU"], "a delayed venue was fetched anyway"
+    assert body["delayed_venues"] == ["005930.KS"]
+
+    both = (
+        await client.get("/setups?ticker=MU&ticker=005930.KS&include_delayed=true")
+    ).json()
+    assert sorted(asked) == ["005930.KS", "MU", "MU"]
+    assert both["delayed_venues"] == []
+
+
+@pytest.mark.asyncio
+async def test_every_response_says_whether_the_window_is_open(client, seeded_stocks, monkeypatch):
+    """"No signals" reads differently once you know the market shut hours ago."""
+
+    async def _none(symbol, window):
+        return []
+
+    monkeypatch.setattr("app.routers.setups.fetch_intraday", _none)
+
+    body = (await client.get("/setups?ticker=MRNA&tz=Europe/Amsterdam")).json()
+
+    session = body["session"]
+    assert session["venue"].startswith("US")
+    assert isinstance(session["is_open"], bool)
+    # The window the user named, derived rather than hardcoded — and it tracks
+    # daylight saving on both sides instead of drifting for a few weeks a year.
+    assert session["session_in_tz"] in {"15:30-22:00", "14:30-21:00"}
+    assert session["minutes_until_change"] >= 0
+
+
+@pytest.mark.asyncio
+async def test_an_unknown_timezone_does_not_fail_the_scan(client, seeded_stocks, monkeypatch):
+    """A typo in a display parameter must not cost the caller the result."""
+
+    async def _none(symbol, window):
+        return []
+
+    monkeypatch.setattr("app.routers.setups.fetch_intraday", _none)
+
+    body = (await client.get("/setups?ticker=MRNA&tz=Mars/Olympus_Mons")).json()
+
+    assert body["session"]["timezone"] == "UTC"

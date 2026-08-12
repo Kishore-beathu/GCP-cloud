@@ -16,9 +16,9 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
-from app.integrations.yahoo import YahooUnavailable, fetch_intraday
+from app.integrations.yahoo import YahooUnavailable, fetch_intraday, is_realtime
 from app.models import Stock, StockPrice
-from app.services import sectors, setups
+from app.services import markets, sectors, setups
 from app.services.tickers import tickers_in_group
 
 router = APIRouter(prefix="/setups", tags=["setups"])
@@ -51,6 +51,13 @@ STALE_AFTER_MINUTES = 30
 # and this is the default ceiling for calling one actionable.
 ACTIONABLE_BAR_AGE_MINUTES = 10
 
+# The venue these setups are usable on. Not because the patterns are American,
+# but because this feed is real-time only for US listings: everywhere else the
+# entry price is a quarter of an hour old by the time it is read. Its session
+# is therefore the tool's working window — 09:30-16:00 New York, which is
+# 15:30-22:00 in central Europe and moves with daylight saving on both sides.
+TRADABLE_VENUE = "MU"  # any US symbol; resolves to the US market metadata
+
 
 @router.get("", summary="Which intraday setups are triggering right now")
 async def scan(
@@ -78,6 +85,14 @@ async def scan(
     include_stale: bool = Query(
         default=False, description="Include symbols whose market is not trading now"
     ),
+    include_delayed: bool = Query(
+        default=False,
+        description=(
+            "Include venues this feed delays. Off by default: their entry "
+            "prices are ~20 minutes old and not obtainable."
+        ),
+    ),
+    tz: str = Query(default="UTC", description="Report the session window in this timezone"),
     max_bar_age_minutes: float = Query(
         default=ACTIONABLE_BAR_AGE_MINUTES,
         gt=0,
@@ -115,6 +130,10 @@ async def scan(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"Unknown setup {setup!r}. Try one of {sorted(setups.SETUPS)}.",
         )
+
+    delayed = [symbol for symbol in symbols if not is_realtime(symbol)]
+    if not include_delayed:
+        symbols = [symbol for symbol in symbols if is_realtime(symbol)]
 
     signals: list[dict] = []
     considered: list[dict] = []
@@ -170,6 +189,8 @@ async def scan(
         "unavailable": unavailable,
         "stale_markets": stale,
         "window": WINDOW,
+        "session": _session(tz),
+        "delayed_venues": [] if include_delayed else delayed,
         "signals": signals,
         "actionable_signals": sum(1 for item in signals if item["actionable"]),
         "considered": considered if include_failed else [],
@@ -307,6 +328,10 @@ async def board(
     include_stale: bool = Query(
         default=False, description="Include symbols whose market is not trading now"
     ),
+    include_delayed: bool = Query(
+        default=False, description="Include venues this feed delays by ~20 minutes"
+    ),
+    tz: str = Query(default="UTC", description="Report the session window in this timezone"),
     limit: int = Query(default=40, ge=1, le=500),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
@@ -329,6 +354,10 @@ async def board(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"Unknown setup {setup!r}. Try one of {sorted(setups.SETUPS)}.",
         )
+
+    delayed = [symbol for symbol in symbols if not is_realtime(symbol)]
+    if not include_delayed:
+        symbols = [symbol for symbol in symbols if is_realtime(symbol)]
 
     sessions, unavailable = await _fetch_sessions(symbols)
     previous_closes = await _previous_closes(db, sessions)
@@ -379,6 +408,8 @@ async def board(
         "unavailable": unavailable,
         "stale_markets": stale,
         "window": WINDOW,
+        "session": _session(tz),
+        "delayed_venues": [] if include_delayed else delayed,
         "triggered": sum(1 for row in rows if row["triggered"]),
         "rows": shown,
         "caveat": (
@@ -400,3 +431,18 @@ async def _all_active(db: AsyncSession) -> list[str]:
             )
         ).scalars()
     )
+
+
+def _session(tz: str) -> dict:
+    """Whether the tradable window is open, and when that next changes.
+
+    Reported on every response because a scan run outside it is not wrong, it
+    is just early — and "no signals" reads very differently once you know the
+    market has been shut for nine hours.
+    """
+    try:
+        return markets.session_state(markets.resolve(TRADABLE_VENUE), tz=tz)
+    except Exception:
+        # An unknown timezone is the caller's typo, not a reason to fail the
+        # scan they actually asked for.
+        return markets.session_state(markets.resolve(TRADABLE_VENUE), tz="UTC")

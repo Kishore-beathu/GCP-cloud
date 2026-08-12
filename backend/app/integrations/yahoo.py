@@ -51,6 +51,24 @@ class YahooUnavailable(Exception):
     """Raised when Yahoo refuses traffic outright; the batch should stop."""
 
 
+# Yahoo quotes US listings in real time and delays every other venue by roughly
+# a quarter of an hour. For daily history that is irrelevant — a close is a
+# close whenever it arrives — but an intraday setup entered at the last bar's
+# price is unusable on a delayed feed: those stops are a fraction of a percent
+# wide and fifteen minutes is many multiples of that in drift.
+FEED_DELAY_MINUTES = 20
+
+
+def feed_delay_minutes(ticker: str) -> int:
+    """Roughly how far behind this feed runs for a symbol's venue."""
+    return 0 if markets.resolve(ticker).suffix == "" else FEED_DELAY_MINUTES
+
+
+def is_realtime(ticker: str) -> bool:
+    """Whether an intraday price for this symbol is current enough to trade."""
+    return feed_delay_minutes(ticker) == 0
+
+
 def parse_chart(ticker: str, payload: dict) -> list[Quote]:
     """Turn a chart response into daily quotes, oldest first.
 

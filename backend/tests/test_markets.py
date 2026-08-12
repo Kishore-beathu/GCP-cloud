@@ -106,3 +106,54 @@ def test_every_market_has_complete_metadata():
 def test_mics_are_unique():
     mics = [market.mic for market in markets.MARKETS]
     assert len(mics) == len(set(mics))
+
+
+# --- Session state -----------------------------------------------------------
+
+
+def test_the_us_session_renders_as_the_window_a_european_reader_sees():
+    """"15:30-22:00" is only true in central Europe, and only in summer.
+
+    Derived from the exchange calendar rather than a fixed offset, so it moves
+    with daylight saving on both sides instead of being an hour wrong for the
+    several weeks a year when the two zones switch on different dates.
+    """
+    from datetime import datetime, timezone
+
+    us = markets.resolve("MU")
+
+    summer = markets.session_state(
+        us, tz="Europe/Amsterdam", moment=datetime(2026, 8, 11, 12, 0, tzinfo=timezone.utc)
+    )
+    winter = markets.session_state(
+        us, tz="Europe/Amsterdam", moment=datetime(2026, 1, 14, 12, 0, tzinfo=timezone.utc)
+    )
+
+    assert summer["session_in_tz"] == "15:30-22:00"
+    assert winter["session_in_tz"] == "15:30-22:00"
+    assert summer["session_local"].startswith("09:30-16:00")
+
+
+def test_next_open_skips_the_weekend():
+    """Friday evening's "next open" is Monday, not Saturday."""
+    from datetime import datetime, timezone
+
+    us = markets.resolve("MU")
+    friday_evening = datetime(2026, 8, 14, 22, 0, tzinfo=timezone.utc)
+
+    opens = markets.next_open(us, friday_evening)
+
+    assert opens.weekday() == 0  # Monday
+
+
+def test_session_state_counts_down_to_the_close_while_open():
+    from datetime import datetime, timezone
+
+    us = markets.resolve("MU")
+    midday_ny = datetime(2026, 8, 11, 16, 0, tzinfo=timezone.utc)  # 12:00 ET
+
+    state = markets.session_state(us, moment=midday_ny)
+
+    assert state["is_open"] is True
+    # Four hours to the 16:00 close.
+    assert state["minutes_until_change"] == 240
