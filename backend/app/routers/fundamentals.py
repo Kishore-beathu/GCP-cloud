@@ -218,10 +218,17 @@ async def trigger_fundamentals(
     only_stale: bool = Query(
         default=True, description="False re-fetches everything, not just what is missing"
     ),
+    include_non_us: bool = Query(
+        default=False,
+        description=(
+            "Ask for non-US listings too. The free tier does not cover them, so "
+            "this spends requests on calls that return nothing."
+        ),
+    ),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """Three vendor calls per symbol, so it runs inline and reports counts."""
-    report = await fundamentals.ingest_fundamentals(db, ticker, only_stale)
+    report = await fundamentals.ingest_fundamentals(db, ticker, only_stale, include_non_us)
     return report.as_dict()
 
 

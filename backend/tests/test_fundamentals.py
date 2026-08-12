@@ -234,3 +234,74 @@ async def test_a_symbol_the_vendor_does_not_cover_is_named(db, seeded_stocks, mo
 
     assert report.uncovered == [seeded_stocks[0].ticker]
     assert report.profiles_updated == 0
+
+
+@pytest.mark.asyncio
+async def test_non_us_listings_are_skipped_rather_than_asked(db, monkeypatch):
+    """The free tier does not cover them, so asking spends requests on nothing.
+
+    It also decided which symbol a bad key first failed on: the list is
+    alphabetical, so a rejected credential surfaced on 000660.KS — a symbol
+    the vendor would not have covered either way — and read as a coverage
+    problem rather than an authentication one.
+    """
+    from app.config import get_settings
+    from app.services import fundamentals as service
+
+    db.add_all(
+        [
+            Stock(ticker="MU", company_name="Micron", sector="memory"),
+            Stock(ticker="000660.KS", company_name="SK hynix", sector="memory"),
+            Stock(ticker="4502.T", company_name="Takeda", sector="pharma"),
+        ]
+    )
+    await db.commit()
+
+    asked: list[str] = []
+
+    async def _profile(client, ticker, key):
+        asked.append(ticker)
+        return {"market_cap": 1.0, "shares_outstanding": 1.0}
+
+    async def _empty(client, ticker, key):
+        return []
+
+    monkeypatch.setenv("FINNHUB_API_KEY", "test-key")
+    get_settings.cache_clear()
+    monkeypatch.setattr(service, "fetch_profile", _profile)
+    monkeypatch.setattr(service, "fetch_earnings", _empty)
+    monkeypatch.setattr(service, "fetch_recommendations", _empty)
+    monkeypatch.setattr(service, "REQUEST_DELAY_SECONDS", 0)
+
+    try:
+        report = await fundamentals.ingest_fundamentals(db, only_stale=False)
+    finally:
+        get_settings.cache_clear()
+
+    assert asked == ["MU"]
+    assert report.symbols == 1
+    assert report.skipped_non_us == 2
+
+
+@pytest.mark.asyncio
+async def test_a_rejected_key_is_named_as_a_key_problem(db, seeded_stocks, monkeypatch):
+    """"Refused" alone reads as coverage; the cause belongs in the message."""
+    from app.config import get_settings
+    from app.integrations.finnhub import FinnhubRejected
+    from app.services import fundamentals as service
+
+    async def _rejected(client, ticker, key):
+        raise FinnhubRejected('HTTP 401 for MRNA: {"error":"Invalid API key"}')
+
+    monkeypatch.setenv("FINNHUB_API_KEY", "wrong-key")
+    get_settings.cache_clear()
+    monkeypatch.setattr(service, "fetch_profile", _rejected)
+    monkeypatch.setattr(service, "REQUEST_DELAY_SECONDS", 0)
+
+    try:
+        report = await fundamentals.ingest_fundamentals(db, only_stale=False)
+    finally:
+        get_settings.cache_clear()
+
+    assert "FINNHUB_API_KEY" in report.note
+    assert report.profiles_updated == 0

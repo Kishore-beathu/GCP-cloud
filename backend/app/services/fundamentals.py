@@ -57,6 +57,7 @@ class FundamentalsReport:
     """What one ingest pass did."""
 
     symbols: int = 0
+    skipped_non_us: int = 0
     profiles_updated: int = 0
     earnings_stored: int = 0
     trends_stored: int = 0
@@ -66,6 +67,7 @@ class FundamentalsReport:
     def as_dict(self) -> dict:
         return {
             "symbols": self.symbols,
+            "skipped_non_us": self.skipped_non_us,
             "profiles_updated": self.profiles_updated,
             "earnings_stored": self.earnings_stored,
             "trends_stored": self.trends_stored,
@@ -78,6 +80,7 @@ async def ingest_fundamentals(
     db: AsyncSession,
     tickers: list[str] | None = None,
     only_stale: bool = True,
+    include_non_us: bool = False,
 ) -> FundamentalsReport:
     """Refresh profile, earnings and analyst trend for the given symbols.
 
@@ -94,8 +97,17 @@ async def ingest_fundamentals(
         logger.info("Fundamentals ingest skipped: no Finnhub key")
         return report
 
-    stocks = await _stocks_to_refresh(db, tickers, only_stale)
+    stocks = await _stocks_to_refresh(db, tickers, only_stale, include_non_us)
     report.symbols = len(stocks)
+    if not include_non_us:
+        total = len(
+            list(
+                (
+                    await db.execute(select(Stock).where(Stock.is_active.is_(True)))
+                ).scalars()
+            )
+        )
+        report.skipped_non_us = max(0, total - len(stocks))
     if not stocks:
         return report
 
@@ -105,7 +117,14 @@ async def ingest_fundamentals(
                 covered = await _refresh_one(db, client, stock, settings.finnhub_api_key, report)
             except FinnhubRejected as exc:
                 # About the account, not the symbol: every later call fails too.
-                report.note = f"Finnhub refused the request: {exc}"
+                # Say which, because "refused" on a Korean listing reads as a
+                # coverage gap when it is actually a rejected credential.
+                reason = (
+                    "the key itself was rejected — check FINNHUB_API_KEY"
+                    if "invalid api key" in str(exc).lower()
+                    else "the account lacks access to this endpoint"
+                )
+                report.note = f"Finnhub refused the request ({reason}): {exc}"
                 logger.error("Fundamentals ingest stopped: %s", exc)
                 break
             except FinnhubRateLimited:
@@ -209,12 +228,22 @@ async def _upsert_trend(db: AsyncSession, ticker_id: int, row: dict) -> bool:
 
 
 async def _stocks_to_refresh(
-    db: AsyncSession, tickers: list[str] | None, only_stale: bool
+    db: AsyncSession, tickers: list[str] | None, only_stale: bool, include_non_us: bool
 ) -> list[Stock]:
     query = select(Stock).where(Stock.is_active.is_(True)).order_by(Stock.ticker)
     if tickers:
         query = query.where(Stock.ticker.in_([t.upper() for t in tickers]))
     stocks = list((await db.execute(query)).scalars())
+
+    if not include_non_us:
+        # The free tier covers US listings and returns an empty profile for
+        # everything else. Asking anyway spends about 110 of this universe's
+        # 178 symbols on calls that cannot succeed — and, because the list is
+        # alphabetical, spends the *first* one on 000660.KS, so a rejected key
+        # first surfaces on a symbol the vendor would not have covered either
+        # way. That made a plain authentication failure look like a coverage
+        # problem.
+        stocks = [stock for stock in stocks if not (stock.ticker or "").count(".")]
 
     if not only_stale:
         return stocks
