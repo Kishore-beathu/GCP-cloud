@@ -41,6 +41,14 @@ GROUPS: tuple[SectorGroup, ...] = (
         sectors=(
             "pharma",
             "biotech",
+            # Separate from "biotech" because the two trade on different
+            # things. A company with an approved product trades on
+            # prescriptions, pricing and guidance; a clinical-stage company has
+            # no revenue to guide and trades almost entirely on scheduled
+            # binary events — a readout, a PDUFA date, an advisory committee.
+            # They are the names the catalyst calendar exists for, and mixing
+            # them into "biotech" made a 40-name cohort invisible inside it.
+            "clinical_stage",
             "cdmo",
             "cro",
             "life_science_tools",

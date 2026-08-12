@@ -270,7 +270,103 @@ SEED_TICKERS: tuple[TickerSeed, ...] = (
     # --- North America beyond the US ---------------------------------------
     TickerSeed("BHC.TO", "Bausch Health Companies", "pharma"),
     # CXR.TO was Concordia International, long delisted. Cardiol is CRDL.
-    TickerSeed("CRDL.TO", "Cardiol Therapeutics", "biotech"),
+    TickerSeed("CRDL.TO", "Cardiol Therapeutics", "clinical_stage"),
+    # Both Canadians above are dual-listed, and only the US line is reachable
+    # from a Revolut account — it carries US-listed stocks only. The Toronto
+    # lines stay because they carry the domestic session and the home-market
+    # news flow; these are the ones actually tradeable.
+    TickerSeed("BHC", "Bausch Health Companies", "pharma", "NYSE"),
+    TickerSeed("CRDL", "Cardiol Therapeutics", "clinical_stage", "NASDAQ"),
+    # --- Clinical-stage: North America --------------------------------------
+    # The cohort this platform was missing. Everything above with a "biotech"
+    # label sells something; each name below is pre-revenue and re-rates on a
+    # single scheduled event, which is the behaviour the catalyst calendar and
+    # the setup scanner were built around.
+    #
+    # Four rules decided the list, and each one excludes names worth holding:
+    #
+    # 1. **A US primary listing.** Revolut carries US-listed stocks only —
+    #    roughly 4,000 across NYSE, Nasdaq and NYSE American — so a TSX or
+    #    ASX line is not reachable from that account however good the company.
+    #    Canadian issuers appear here under their Nasdaq symbol (XENE, ABCL,
+    #    ZYME, CRDL), which is why the cohort is North American rather than US.
+    # 2. **No approved product.** The boundary moves in one direction and
+    #    quietly: Nuvation and Crinetics were both clinical-stage until an
+    #    approval landed, and they are deliberately absent for that reason.
+    # 3. **Comfortably clear of $50M.** Not near it. A name sitting at the
+    #    threshold crosses it on an ordinary day's move, and a universe whose
+    #    membership changes with the tape is not a universe.
+    # 4. **Not under a definitive acquisition agreement.** A company being
+    #    bought stops trading on its science and starts trading on the spread
+    #    to the offer, so it is noise in a catalyst scanner. That rule removed
+    #    four names during this pass alone — Arcellx (Gilead, closed April
+    #    2026), Terns (Merck, closed May 2026), Merus (Genmab, closed December
+    #    2025) and Apogee (AbbVie, agreed June 2026) — which is the rate this
+    #    cohort turns over at, and the reason the list below is a starting
+    #    point to verify rather than a fact to trust.
+    #
+    # Verify the whole cohort in one call once the vendor key works:
+    #   GET /fundamentals?group=pharma_life_sciences&min_market_cap=50000000
+    # Anything that reports a null market cap there is either uncovered or no
+    # longer trading, and both are worth knowing before sizing a position.
+    #
+    # Metabolic and cardiovascular.
+    TickerSeed("VKTX", "Viking Therapeutics", "clinical_stage", "NASDAQ"),
+    TickerSeed("AKRO", "Akero Therapeutics", "clinical_stage", "NASDAQ"),
+    TickerSeed("ALT", "Altimmune Inc.", "clinical_stage", "NASDAQ"),
+    TickerSeed("MLYS", "Mineralys Therapeutics", "clinical_stage", "NASDAQ"),
+    # Oncology, the deepest part of the cohort and the most catalyst-driven.
+    TickerSeed("SMMT", "Summit Therapeutics Inc.", "clinical_stage", "NASDAQ"),
+    TickerSeed("NUVL", "Nuvalent Inc.", "clinical_stage", "NASDAQ"),
+    TickerSeed("RVMD", "Revolution Medicines", "clinical_stage", "NASDAQ"),
+    TickerSeed("IDYA", "IDEAYA Biosciences", "clinical_stage", "NASDAQ"),
+    TickerSeed("KURA", "Kura Oncology Inc.", "clinical_stage", "NASDAQ"),
+    TickerSeed("ARVN", "Arvinas Inc.", "clinical_stage", "NASDAQ"),
+    TickerSeed("NRIX", "Nurix Therapeutics", "clinical_stage", "NASDAQ"),
+    TickerSeed("RLAY", "Relay Therapeutics", "clinical_stage", "NASDAQ"),
+    TickerSeed("ERAS", "Erasca Inc.", "clinical_stage", "NASDAQ"),
+    TickerSeed("OLMA", "Olema Pharmaceuticals", "clinical_stage", "NASDAQ"),
+    TickerSeed("CCCC", "C4 Therapeutics Inc.", "clinical_stage", "NASDAQ"),
+    TickerSeed("ORIC", "ORIC Pharmaceuticals", "clinical_stage", "NASDAQ"),
+    TickerSeed("TNGX", "Tango Therapeutics", "clinical_stage", "NASDAQ"),
+    TickerSeed("COGT", "Cogent Biosciences", "clinical_stage", "NASDAQ"),
+    TickerSeed("CGEM", "Cullinan Therapeutics", "clinical_stage", "NASDAQ"),
+    TickerSeed("REPL", "Replimune Group Inc.", "clinical_stage", "NASDAQ"),
+    TickerSeed("ELVN", "Enliven Therapeutics", "clinical_stage", "NASDAQ"),
+    TickerSeed("CLDX", "Celldex Therapeutics", "clinical_stage", "NASDAQ"),
+    TickerSeed("JANX", "Janux Therapeutics", "clinical_stage", "NASDAQ"),
+    TickerSeed("KYMR", "Kymera Therapeutics", "clinical_stage", "NASDAQ"),
+    # Genetic medicine: gene editing, gene therapy and cell therapy. The
+    # highest-variance names here — a single readout has repeatedly moved
+    # these 50% in a session, in both directions.
+    TickerSeed("NTLA", "Intellia Therapeutics", "clinical_stage", "NASDAQ"),
+    TickerSeed("BEAM", "Beam Therapeutics Inc.", "clinical_stage", "NASDAQ"),
+    TickerSeed("PRME", "Prime Medicine Inc.", "clinical_stage", "NASDAQ"),
+    TickerSeed("EDIT", "Editas Medicine Inc.", "clinical_stage", "NASDAQ"),
+    TickerSeed("SANA", "Sana Biotechnology", "clinical_stage", "NASDAQ"),
+    TickerSeed("RCKT", "Rocket Pharmaceuticals", "clinical_stage", "NASDAQ"),
+    TickerSeed("ALLO", "Allogene Therapeutics", "clinical_stage", "NASDAQ"),
+    TickerSeed("FATE", "Fate Therapeutics Inc.", "clinical_stage", "NASDAQ"),
+    TickerSeed("CRBU", "Caribou Biosciences", "clinical_stage", "NASDAQ"),
+    TickerSeed("ARCT", "Arcturus Therapeutics", "clinical_stage", "NASDAQ"),
+    # Immunology and inflammation.
+    TickerSeed("IMVT", "Immunovant Inc.", "clinical_stage", "NASDAQ"),
+    TickerSeed("VERA", "Vera Therapeutics Inc.", "clinical_stage", "NASDAQ"),
+    TickerSeed("SYRE", "Spyre Therapeutics", "clinical_stage", "NASDAQ"),
+    TickerSeed("VRDN", "Viridian Therapeutics", "clinical_stage", "NASDAQ"),
+    TickerSeed("KROS", "Keros Therapeutics Inc.", "clinical_stage", "NASDAQ"),
+    TickerSeed("PTGX", "Protagonist Therapeutics", "clinical_stage", "NASDAQ"),
+    TickerSeed("SRRK", "Scholar Rock Holding", "clinical_stage", "NASDAQ"),
+    TickerSeed("SVRA", "Savara Inc.", "clinical_stage", "NASDAQ"),
+    TickerSeed("ANNX", "Annexon Inc.", "clinical_stage", "NASDAQ"),
+    # Neurology and psychiatry.
+    TickerSeed("DNLI", "Denali Therapeutics", "clinical_stage", "NASDAQ"),
+    TickerSeed("PRAX", "Praxis Precision Medicines", "clinical_stage", "NASDAQ"),
+    TickerSeed("MNMD", "Mind Medicine (MindMed)", "clinical_stage", "NASDAQ"),
+    # Canadian issuers on their US line, tradeable where the TSX line is not.
+    TickerSeed("XENE", "Xenon Pharmaceuticals", "clinical_stage", "NASDAQ"),
+    TickerSeed("ABCL", "AbCellera Biologics Inc.", "clinical_stage", "NASDAQ"),
+    TickerSeed("ZYME", "Zymeworks Inc.", "clinical_stage", "NASDAQ"),
 )
 
 

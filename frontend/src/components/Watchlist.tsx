@@ -33,6 +33,7 @@ export const SECTOR_PREFIX = 'sector:'
 const SECTOR_LABELS: Record<string, string> = {
   pharma: 'Pharma',
   biotech: 'Biotech',
+  clinical_stage: 'Clinical-stage (pre-revenue)',
   cdmo: 'Contract manufacturing (CDMO)',
   cro: 'Contract research (CRO)',
   life_science_tools: 'Life science tools',

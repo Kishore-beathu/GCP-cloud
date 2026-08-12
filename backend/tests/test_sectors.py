@@ -270,3 +270,90 @@ def test_dual_listed_cros_share_one_company_name():
     tigermed = by_name["Hangzhou Tigermed Consulting Co."]
     assert tigermed == {"300347.SZ", "3347.HK"}
     assert by_name["WuXi AppTec Co."] == {"603259.SS", "2359.HK"}
+
+
+# --- Clinical-stage cohort ---------------------------------------------------
+# Pre-revenue developers were previously scattered through "biotech" alongside
+# companies with marketed products. The two trade on entirely different things,
+# and the ranked score compares a symbol against its cohort, so mixing them
+# meant ranking a company with no revenue against one guiding on it.
+
+
+def _clinical_stage() -> list:
+    return [seed for seed in SEED_TICKERS if seed.sector == "clinical_stage"]
+
+
+def test_the_clinical_stage_cohort_is_large_enough_to_rank():
+    """Cross-sectional ranking needs a cohort, not a handful.
+
+    Percentile rank against four names produces four percentiles; the factor
+    carries almost no information and the score built on it inherits that.
+    """
+    cohort = _clinical_stage()
+
+    assert len(cohort) >= 40
+    assert all(sectors.group_for(seed.sector) == "pharma_life_sciences" for seed in cohort)
+
+
+def test_every_clinical_stage_name_has_a_us_line():
+    """The account these are for carries US-listed stocks only.
+
+    A company can be worth watching and still be unreachable: a TSX-only
+    listing shows a price, a score and a setup, and none of it can be acted
+    on. Canadian issuers are here under their Nasdaq symbol for that reason,
+    with the home line kept separately for its domestic session and news.
+    """
+    us_lines = {seed.ticker for seed in _clinical_stage() if "." not in seed.ticker}
+
+    for foreign in (seed for seed in _clinical_stage() if "." in seed.ticker):
+        base = foreign.ticker.partition(".")[0]
+        assert base in us_lines, f"{foreign.ticker} has no US line to trade"
+
+
+def test_names_that_stopped_trading_are_not_reintroduced():
+    """The failure mode this cohort actually has, encoded so an edit trips it.
+
+    Clinical-stage companies leave by acquisition constantly — four of them
+    did during the pass that built this list. Every one still reads as a
+    plausible ticker afterwards, and a seeded symbol that no longer trades
+    produces an empty chart rather than an error, so nothing surfaces it. Two
+    dead tickers reached this list before (a CRO private since 2024, a CRO in
+    Chapter 11) and both were found by hand.
+    """
+    acquired = {
+        "ACLX",  # Arcellx -> Gilead, closed April 2026
+        "TERN",  # Terns Pharmaceuticals -> Merck, closed May 2026
+        "MRUS",  # Merus -> Genmab, closed December 2025
+        "APGE",  # Apogee Therapeutics -> AbbVie, agreed June 2026
+        "VERV",  # Verve Therapeutics -> Eli Lilly
+        "MTSR",  # Metsera -> Pfizer
+        "APLT",  # Applied Therapeutics, taken private February 2026
+        "NOTV",  # Inotiv, Chapter 11
+        "2309.T",  # CMIC Holdings, delisted 2024
+        "CFLT",  # Confluent -> IBM
+        "PSTG",  # Pure Storage, renamed and moved to P
+    }
+
+    seeded = {seed.ticker for seed in SEED_TICKERS}
+
+    assert not (seeded & acquired)
+
+
+def test_a_company_with_an_approved_product_is_not_clinical_stage():
+    """The boundary moves in one direction, and only ever quietly.
+
+    An approval turns a binary-event stock into one that trades on
+    prescriptions and guidance. Nothing in the pipeline notices, so the name
+    keeps being ranked against pre-revenue peers on factors it no longer has.
+    """
+    cohort = {seed.ticker for seed in _clinical_stage()}
+    now_commercial = {
+        "NUVB",  # Nuvation Bio - taletrectinib approved June 2025
+        "CRNX",  # Crinetics - paltusotine approved 2025
+        "MDGL",  # Madrigal - Rezdiffra
+        "KRYS",  # Krystal Biotech - Vyjuvek
+        "IOVA",  # Iovance - Amtagvi
+        "AUPH",  # Aurinia - Lupkynis
+    }
+
+    assert not (cohort & now_commercial)
