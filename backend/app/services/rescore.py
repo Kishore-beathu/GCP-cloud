@@ -200,6 +200,8 @@ class AttributionReport:
     examined: int = 0
     misattributed: int = 0
     deleted: int = 0
+    sources: list[str] = field(default_factory=list)
+    by_source: dict[str, int] = field(default_factory=dict)
     by_ticker: dict[str, int] = field(default_factory=dict)
     samples: list[dict] = field(default_factory=list)
 
@@ -208,13 +210,23 @@ class AttributionReport:
             "examined": self.examined,
             "misattributed": self.misattributed,
             "deleted": self.deleted,
+            "sources": self.sources,
+            "by_source": self.by_source,
             "by_ticker": self.by_ticker,
             "samples": self.samples,
         }
 
 
+# Sources fetched one symbol at a time, where the request URL was taken as
+# proof the story is about that symbol. Both vendors answer with a mix.
+PER_SYMBOL_SOURCES = ("yahoo_news", "finnhub")
+
+
 async def audit_attribution(
-    db: AsyncSession, apply: bool = False, limit: int = 20
+    db: AsyncSession,
+    apply: bool = False,
+    limit: int = 20,
+    sources: tuple[str, ...] = ("yahoo_news",),
 ) -> AttributionReport:
     """Find stored Yahoo articles that never name the symbol they are filed under.
 
@@ -233,30 +245,48 @@ async def audit_attribution(
     correctness, and does it invisibly.
 
     Still a dry run by default: it reports the scale and names examples first.
+
+    ``sources`` defaults to Yahoo alone, which is the one measured so far.
+    Finnhub's company-news carries the same shape of filler — "Stay informed
+    with the top movers within the S&P500 index on Monday" arrived under CIEN —
+    but it is the better-attributed feed of the two, and a headline there can
+    legitimately omit the company name ("Q2 earnings beat estimates"). So it is
+    measurable on request and not swept up by default: measure before deleting.
     """
     from app.services.matching import build_index
-    from app.integrations.yahoo_news import SOURCE, _is_about
+    from app.integrations.yahoo_news import _is_about
 
     report = AttributionReport()
     index = await build_index(db)
 
+    wanted = tuple(sources) or ("yahoo_news",)
+    report.sources = list(wanted)
     rows = (
         await db.execute(
-            select(NewsArticle.id, NewsArticle.headline, NewsArticle.body, Stock.ticker)
+            select(
+                NewsArticle.id,
+                NewsArticle.headline,
+                NewsArticle.body,
+                NewsArticle.source,
+                Stock.ticker,
+            )
             .join(Stock, Stock.id == NewsArticle.ticker_id)
-            .where(NewsArticle.source == SOURCE)
+            .where(NewsArticle.source.in_(wanted))
         )
     ).all()
     report.examined = len(rows)
 
     wrong: list[int] = []
-    for article_id, headline, body, ticker in rows:
+    for article_id, headline, body, source, ticker in rows:
         if _is_about(ticker, headline, body, index):
             continue
         wrong.append(article_id)
+        report.by_source[source] = report.by_source.get(source, 0) + 1
         report.by_ticker[ticker] = report.by_ticker.get(ticker, 0) + 1
         if len(report.samples) < limit:
-            report.samples.append({"ticker": ticker, "headline": headline})
+            report.samples.append(
+                {"ticker": ticker, "source": source, "headline": headline}
+            )
 
     report.misattributed = len(wrong)
 

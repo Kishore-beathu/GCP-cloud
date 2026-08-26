@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
+from functools import lru_cache
+from pathlib import Path
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from sqlalchemy import text
@@ -36,6 +38,30 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["system"])
 
 
+@lru_cache(maxsize=1)
+def _build() -> str | None:
+    """The commit this process was started from, best effort.
+
+    Read once and cached: it cannot change while the process lives, which is
+    the entire point of reporting it. Returns None outside a git checkout — a
+    container image or an installed package — where the question does not
+    arise.
+    """
+    import subprocess
+
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=Path(__file__).resolve().parents[2],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return result.stdout.strip() or None if result.returncode == 0 else None
+
+
 @router.get("/health", response_model=HealthResponse, summary="Liveness and dependency check")
 async def health(db: AsyncSession = Depends(get_db)) -> HealthResponse:
     settings = get_settings()
@@ -52,6 +78,7 @@ async def health(db: AsyncSession = Depends(get_db)) -> HealthResponse:
         environment=settings.environment,
         database=database,
         sentiment_backend=settings.sentiment_backend,
+        build=_build(),
     )
 
 
@@ -394,6 +421,13 @@ async def audit_news_attribution(
         default=False,
         description="False reports what would be deleted; True deletes it",
     ),
+    source: list[str] | None = Query(
+        default=None,
+        description=(
+            "Which per-symbol sources to audit. Defaults to yahoo_news; pass "
+            "finnhub to measure that feed before deciding whether to prune it."
+        ),
+    ),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """Count stored Yahoo articles that never name the symbol they are under.
@@ -407,7 +441,9 @@ async def audit_news_attribution(
     score that is wrong about which company it describes, not merely one whose
     hyperlink is broken. Dry run by default all the same.
     """
-    report = await audit_attribution(db, apply=apply)
+    report = await audit_attribution(
+        db, apply=apply, sources=tuple(source) if source else ("yahoo_news",)
+    )
     return report.as_dict()
 
 

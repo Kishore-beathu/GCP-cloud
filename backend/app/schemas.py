@@ -23,6 +23,11 @@ class HealthResponse(BaseModel):
     environment: str
     database: str
     sentiment_backend: str
+    # The commit this process is running, so "did my pull reach the server"
+    # is one request rather than an inference from surprising output. Code is
+    # loaded once at startup, so a pulled fix does nothing until a restart,
+    # and every symptom of that looks like the fix not working.
+    build: str | None = None
 
 
 # --- Stocks -----------------------------------------------------------------

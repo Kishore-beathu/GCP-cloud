@@ -293,3 +293,36 @@ async def test_the_audit_leaves_other_sources_alone(db, seeded_stocks):
 
     assert report.examined == 0
     assert report.misattributed == 0
+
+
+@pytest.mark.asyncio
+async def test_finnhub_can_be_audited_without_being_pruned_by_default(db, seeded_stocks):
+    """Measure before deleting, on the feed that is mostly right.
+
+    Finnhub's company news carries the same filler shape — "Stay informed with
+    the top movers within the S&P500 index on Monday" arrived filed under CIEN
+    — but it is the better-attributed of the two sources, and a headline there
+    can legitimately omit the company name. So it is measurable on request and
+    excluded from the default sweep.
+    """
+    from app.services.rescore import audit_attribution
+
+    stock = seeded_stocks[0]
+    db.add(
+        NewsArticle(
+            ticker_id=stock.id,
+            headline="Stay informed with the top movers within the S&P500 index",
+            url="https://example.com/filler",
+            source="finnhub",
+            published_at=datetime.now(timezone.utc),
+        )
+    )
+    await db.commit()
+
+    default = await audit_attribution(db)
+    assert default.examined == 0
+
+    asked = await audit_attribution(db, sources=("finnhub",))
+    assert asked.misattributed == 1
+    assert asked.by_source == {"finnhub": 1}
+    assert asked.samples[0]["source"] == "finnhub"
