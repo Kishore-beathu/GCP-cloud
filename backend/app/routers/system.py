@@ -448,6 +448,33 @@ async def audit_news_attribution(
 
 
 @router.get(
+    "/admin/diagnose/corporate-actions",
+    summary="Find price discontinuities that look like unadjusted splits",
+    dependencies=[Depends(require_auth)],
+)
+async def diagnose_corporate_actions(
+    days: int = Query(default=400, ge=30, le=3650),
+    ticker: list[str] | None = Query(default=None),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """A split nothing adjusted for looks like a 50% crash to every factor.
+
+    Momentum collapses, volatility spikes, the 52-week range position hits its
+    floor, and the backtester reads the period as a catastrophe — which then
+    feeds the pillar weights. One unadjusted split inside a validation window
+    quietly moves the weights of the whole score.
+
+    Detection only. Adjusting needs the ratio, and inferring a ratio from the
+    price move is how a genuine crash gets "corrected" into a split that never
+    happened, destroying real data to fix imagined data.
+    """
+    from app.services import corporate_actions
+
+    report = await corporate_actions.detect(db, days=days, tickers=ticker)
+    return report.as_dict()
+
+
+@router.get(
     "/admin/sentiment/status",
     summary="How many stored scores are stale",
     dependencies=[Depends(require_auth)],
