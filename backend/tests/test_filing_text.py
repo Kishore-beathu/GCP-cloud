@@ -10,6 +10,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 import pytest
+from sqlalchemy.exc import OperationalError
 
 from app.services.filing_text import (
     MAX_BODY_CHARS,
@@ -604,3 +605,53 @@ async def test_one_bad_filing_does_not_lose_the_run(db, seeded_stocks, monkeypat
     assert report.errors == {"ValueError": 1}
     assert report.error_samples[0]["error"] == "ValueError"
     assert report.error_samples[0]["url"].startswith("https://www.sec.gov/")
+
+
+@pytest.mark.asyncio
+async def test_a_failed_commit_is_reported_rather_than_raised(
+    db, seeded_stocks, monkeypatch
+):
+    """The commit is the last step that can lose the whole run silently.
+
+    It sits outside the per-filing guard by nature — a lock conflict with the
+    scheduler surfaces there, not on any one article — so without this the
+    response is a bare 500 naming nothing, which is the failure mode this
+    endpoint has already produced twice.
+    """
+    import httpx
+
+    from app.models import NewsArticle
+    from app.services import rescore
+
+    stock = seeded_stocks[0]
+    db.add(
+        NewsArticle(
+            ticker_id=stock.id,
+            headline="Co filed 8-K: Other Events",
+            body="Form 8-K filed 2026-08-20 (Current report).",
+            source="sec_edgar",
+            url="https://www.sec.gov/Archives/edgar/data/1/9/form8k.htm",
+            published_at=datetime.now(timezone.utc),
+        )
+    )
+    await db.commit()
+    db.expunge_all()
+
+    monkeypatch.setattr(rescore, "SEC_REQUEST_DELAY_SECONDS", 0.0)
+    monkeypatch.setattr(
+        httpx.AsyncClient, "get", lambda self, url, **kwargs: _response(_filing())
+    )
+
+    async def _locked():
+        raise OperationalError("commit", {}, Exception("database is locked"))
+
+    monkeypatch.setattr(db, "commit", _locked)
+
+    report = await rescore.backfill_filing_text(db)
+
+    assert "OperationalError" in report.errors
+    assert report.stopped_early is not None
+    assert "nothing was saved" in report.stopped_early
+    # The counts must not claim work that was rolled back.
+    assert report.updated == 0
+    assert report.rescored == 0

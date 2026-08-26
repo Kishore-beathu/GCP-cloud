@@ -521,6 +521,24 @@ async def backfill_filing_text(
                      "narrative_chars": len(narrative)}
                 )
 
-    await db.commit()
+    # The commit is the one step left that can lose everything, and it sits
+    # outside the per-filing guard by nature: it is where a lock conflict with
+    # the scheduler, or any constraint violation, actually surfaces. Reporting
+    # it beats a bare 500 that names nothing.
+    try:
+        await db.commit()
+    except Exception as exc:  # noqa: BLE001 - name it rather than vanish
+        logger.exception("Filing text backfill could not commit")
+        await db.rollback()
+        report.errors[type(exc).__name__] = (
+            report.errors.get(type(exc).__name__, 0) + 1
+        )
+        report.stopped_early = (
+            f"Fetched and parsed {report.updated} filings, then the commit "
+            f"failed with {type(exc).__name__}; nothing was saved."
+        )
+        report.updated = 0
+        report.rescored = 0
+
     logger.info("Filing text backfill: %s", report.as_dict())
     return report
