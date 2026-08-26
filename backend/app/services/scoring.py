@@ -214,6 +214,32 @@ SENTIMENT_FULL_WEIGHT_ARTICLES = 5
 # were real, so an imputed pillar is visible rather than passed off as measured.
 NEUTRAL_PERCENTILE = 50.0
 
+# Marks a single factor's ranking apart from a pillar's in the validation
+# output, so a reader can tell "the technical pillar" from "3-month momentum"
+# without knowing the factor names by heart.
+FACTOR_PREFIX = "factor:"
+
+
+def strategy_names() -> tuple[str, ...]:
+    """Every ranking `validate()` reports, pillars first, then factors.
+
+    Defined once so the empty-universe path, the summary loop and the
+    per-period detail cannot drift apart. A strategy present in one and missing
+    from another reads as "not measurable here" rather than "not asked for".
+    """
+    factors = (
+        *TECHNICAL_WEIGHTS,
+        *SENTIMENT_WEIGHTS,
+        "earnings_surprise_pct",
+    )
+    return (
+        "technical",
+        "sentiment",
+        "fundamental",
+        "blended",
+        *(f"{FACTOR_PREFIX}{key}" for key in factors),
+    )
+
 # The fundamental factors, and how they earned their pillar weight.
 #
 # Earnings surprise and analyst revisions have stronger published evidence
@@ -679,6 +705,74 @@ BUCKETS = 5
 WELL_DISPERSED_MIN_DISTINCT = BUCKETS * 2
 
 
+# Below this, the mean spread is not distinguishable from zero on the evidence
+# available. Two is the conventional rough threshold and it is deliberately
+# blunt: with this many periods a precise p-value would imply more rigour than
+# sequential, overlapping-regime periods can support.
+SIGNIFICANT_T = 2.0
+
+# Fewer than this and a standard error is arithmetic rather than evidence.
+MIN_PERIODS_FOR_SIGNIFICANCE = 4
+
+
+def _significance(spreads: list[float]) -> dict:
+    """Whether a mean spread clears zero, and a sentence saying so.
+
+    The summary reported a mean, a standard deviation and a count of positive
+    periods, and left the reader to do the rest. That arithmetic is what
+    decided the pillar weights, and it was done by hand outside the tool — so
+    the endpoint did not support its own headline claim. It does now.
+
+    Deliberately not a p-value. The periods are sequential and share a market
+    regime, so they are not independent draws, and a precise probability would
+    dress that up as more than it is. A t-statistic and a blunt threshold say
+    the same thing without the false precision.
+    """
+    n = len(spreads)
+    if n < MIN_PERIODS_FOR_SIGNIFICANCE:
+        return {
+            "standard_error": None,
+            "t_stat": None,
+            "verdict": f"Too few periods ({n}) to say anything.",
+        }
+
+    mean = sum(spreads) / n
+    stdev = _stdev(spreads)
+    if not stdev:
+        # Every period identical: real, and not something a t-statistic
+        # describes, since the denominator is zero rather than small.
+        return {
+            "standard_error": 0.0,
+            "t_stat": None,
+            "verdict": "Every period returned the same spread; check the inputs.",
+        }
+
+    error = stdev / (n**0.5)
+    t = mean / error
+
+    if abs(t) < SIGNIFICANT_T:
+        verdict = (
+            f"Not distinguishable from zero (t {t:+.2f} over {n} periods). "
+            "No evidence this separates returns."
+        )
+    elif t > 0:
+        verdict = (
+            f"Separates returns (t {t:+.2f} over {n} periods), on sequential "
+            "periods sharing a market regime."
+        )
+    else:
+        verdict = (
+            f"Separates returns *inverted* (t {t:+.2f} over {n} periods) — the "
+            "top of this ranking underperformed the bottom."
+        )
+
+    return {
+        "standard_error": round(error, 4),
+        "t_stat": round(t, 2),
+        "verdict": verdict,
+    }
+
+
 def _stdev(values: list[float]) -> float | None:
     """Sample standard deviation, or None when one period cannot have one."""
     if len(values) < 2:
@@ -769,7 +863,7 @@ def _rank_at(
         sent_counts[symbol] = len(rows)
 
     if not tech_inputs:
-        return {"technical": [], "sentiment": [], "blended": []}
+        return {name: [] for name in strategy_names()}
 
     tech_ranks = {
         key: percentile_ranks({s: getattr(t, key) for s, t in tech_inputs.items()})
@@ -800,6 +894,22 @@ def _rank_at(
         "blended": [],
     }
 
+    # Each factor as its own strategy. The pillar result is an average, and an
+    # average hides its terms: a technical pillar sitting inside its own noise
+    # looks identical whether all five factors are weak or one is strong and
+    # four are diluting it. These percentiles are already computed above and
+    # were being folded away, so measuring them separately costs a loop.
+    #
+    # Inverted factors are inverted here too. Volatility is scored so that less
+    # is better, and ranking it raw would report the opposite of the factor the
+    # score actually uses.
+    for key, ranks in (*tech_ranks.items(), *sent_ranks.items()):
+        rankings[f"{FACTOR_PREFIX}{key}"] = [
+            (symbol, 100 - value if key in _INVERTED else value)
+            for symbol, value in ranks.items()
+            if value is not None
+        ]
+
     for symbol in tech_inputs:
         technical = _weighted(symbol, tech_ranks, TECHNICAL_WEIGHTS)
         sentiment = _weighted(symbol, sent_ranks, SENTIMENT_WEIGHTS)
@@ -813,6 +923,13 @@ def _rank_at(
         fundamental = surprise_ranks.get(symbol)
         if fundamental is not None:
             rankings["fundamental"].append((symbol, fundamental))
+            # Only earnings surprise is reconstructible point-in-time: analyst
+            # trends carry a period, but the vendor supplies only a few months
+            # of them, so ranking revisions at an old as_of would measure a
+            # factor that mostly did not exist yet.
+            rankings.setdefault(f"{FACTOR_PREFIX}earnings_surprise_pct", []).append(
+                (symbol, fundamental)
+            )
 
         blended = _blend(
             technical, sentiment, sent_counts.get(symbol, 0), fundamental
@@ -972,10 +1089,14 @@ async def validate(
             continue
 
         rankings = _rank_at(as_of, history, news, news_days=30, earnings=earnings)
+        # Every period carries every strategy, whether or not this period could
+        # rank it. A key present in some periods and absent from others makes
+        # the summary a lottery, and _spread already reports *why* a ranking
+        # could not be measured — which is the more useful answer than a gap.
         period = {"as_of": as_of.date().isoformat(), "symbols": len(forward)}
-        for strategy, ranked in rankings.items():
-            period[strategy] = _spread(ranked, forward)
-        if any(period[name]["spread"] is not None for name in rankings):
+        for strategy in strategy_names():
+            period[strategy] = _spread(rankings.get(strategy, []), forward)
+        if any(period[name]["spread"] is not None for name in strategy_names()):
             results.append(period)
 
     if not results:
@@ -990,7 +1111,7 @@ async def validate(
         }
 
     summary: dict[str, dict] = {}
-    for strategy in ("technical", "sentiment", "fundamental", "blended"):
+    for strategy in strategy_names():
         spreads = [
             period[strategy]["spread"]
             for period in results
@@ -1040,9 +1161,9 @@ async def validate(
                     # signal; three of six is a coin toss with extra steps.
                     "periods_positive": sum(1 for value in spreads if value > 0),
                     # Spread across periods, so a large mean built out of wild
-                    # swings cannot pass for a stable one. With this few
-                    # periods it is context, not a significance test.
+                    # swings cannot pass for a stable one.
                     "spread_stdev": _stdev(spreads),
+                    **_significance(spreads),
                 }
             )
         # The same three numbers over the periods that could actually rank.

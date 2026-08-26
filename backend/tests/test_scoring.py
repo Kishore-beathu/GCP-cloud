@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -828,3 +830,135 @@ async def test_validation_reports_how_many_symbols_each_strategy_ranked(db):
 
     technical = result["summary"]["technical"]
     assert technical["mean_symbols_ranked"] == 20
+
+
+# --- Per-factor validation and significance -----------------------------------
+
+
+def test_significance_calls_noise_noise():
+    """The whole point: a large mean built of wild swings is not a finding."""
+    from app.services.scoring import _significance
+
+    noisy = [12.0, -8.0, 11.0, -7.0, 9.0, -6.0, 10.0, -5.0, 8.0, -4.0, 11.0, -3.0]
+    result = _significance(noisy)
+
+    assert abs(result["t_stat"]) < scoring.SIGNIFICANT_T
+    assert "Not distinguishable from zero" in result["verdict"]
+
+
+def test_significance_names_an_inverted_factor_as_inverted():
+    """A factor that works backwards is a finding, not a failure to measure.
+
+    Reported as merely "negative" it reads as noise; the top of that ranking
+    underperforming the bottom consistently is information worth acting on.
+    """
+    from app.services.scoring import _significance
+
+    result = _significance([-10.0, -8.0, -12.0, -9.0, -11.0, -13.0])
+
+    assert result["t_stat"] < -scoring.SIGNIFICANT_T
+    assert "inverted" in result["verdict"]
+
+
+def test_significance_refuses_to_judge_too_few_periods():
+    from app.services.scoring import _significance
+
+    result = _significance([3.0, 4.0])
+
+    assert result["t_stat"] is None
+    assert "Too few periods" in result["verdict"]
+
+
+def test_every_named_factor_is_validated_separately(db):
+    """A pillar average hides its terms.
+
+    A technical pillar sitting inside its own noise looks identical whether all
+    five factors are weak or one is strong and four are diluting it. The
+    percentiles were already computed and folded away.
+    """
+    names = scoring.strategy_names()
+
+    for pillar in ("technical", "sentiment", "fundamental", "blended"):
+        assert pillar in names
+    for key in scoring.TECHNICAL_WEIGHTS:
+        assert f"{scoring.FACTOR_PREFIX}{key}" in names
+    for key in scoring.SENTIMENT_WEIGHTS:
+        assert f"{scoring.FACTOR_PREFIX}{key}" in names
+
+
+@pytest.mark.asyncio
+async def test_validation_reports_each_factor_and_its_verdict(db):
+    stocks = [
+        Stock(ticker=f"F{index:02d}", company_name=f"Factor {index}", sector="pharma")
+        for index in range(20)
+    ]
+    db.add_all(stocks)
+    await db.commit()
+    for stock in stocks:
+        await db.refresh(stock)
+
+    now = datetime.now(timezone.utc)
+    for index, stock in enumerate(stocks):
+        rate = 1.004 if index < 10 else 0.996
+        await add_prices(db, stock, [100.0 * rate**day for day in range(220)], end=now)
+
+    summary = (
+        await scoring.validate(
+            db, as_of_days_ago=25, horizon_days=15, periods=3, step_days=20
+        )
+    )["summary"]
+
+    momentum = summary[f"{scoring.FACTOR_PREFIX}momentum_63d"]
+    assert momentum["periods"] >= 2
+    assert momentum["mean_spread"] > 0
+    # The verdict travels with every strategy, including the ones with too
+    # little evidence to judge.
+    assert "verdict" in summary["technical"]
+    assert "verdict" in momentum
+
+
+@pytest.mark.asyncio
+async def test_an_inverted_factor_is_ranked_the_way_the_score_uses_it(db):
+    """Volatility is scored so that less is better.
+
+    Ranked raw, the validation would measure the opposite of the factor the
+    score actually applies, and report that the pillar's own input works
+    backwards.
+    """
+    assert "volatility_21d" in scoring._INVERTED
+
+    stocks = [
+        Stock(ticker=f"V{index:02d}", company_name=f"Vol {index}", sector="pharma")
+        for index in range(20)
+    ]
+    db.add_all(stocks)
+    await db.commit()
+    for stock in stocks:
+        await db.refresh(stock)
+
+    now = datetime.now(timezone.utc)
+    for index, stock in enumerate(stocks):
+        # Calm names compound faster; jumpy names wobble hard and drift less.
+        #
+        # The wobble's period divides the forward horizon exactly, so the start
+        # and end of every measurement window sit at the same phase. A wobble
+        # that does not — an every-other-day flip, say — makes the forward
+        # return a function of which day the window happened to start on, which
+        # swamps the drift and measures nothing.
+        if index < 10:
+            series = [100.0 * 1.003**day for day in range(220)]
+        else:
+            series = [
+                100.0 * 1.001**day * (1 + 0.12 * math.sin(2 * math.pi * day / 5))
+                for day in range(220)
+            ]
+        await add_prices(db, stock, series, end=now)
+
+    summary = (
+        await scoring.validate(
+            db, as_of_days_ago=25, horizon_days=15, periods=3, step_days=20
+        )
+    )["summary"]
+
+    volatility = summary[f"{scoring.FACTOR_PREFIX}volatility_21d"]
+    assert volatility["mean_spread"] > 0, volatility
