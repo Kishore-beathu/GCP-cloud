@@ -244,7 +244,11 @@ async def audit_attribution(
     A missing article costs a little coverage. A misattributed one costs
     correctness, and does it invisibly.
 
-    Still a dry run by default: it reports the scale and names examples first.
+    Still a dry run by default: it reports the scale and names examples
+    first. That is also how a change to the matching rule gets measured — the
+    audit calls the same matcher the ingest does, so tightening the rule and
+    re-running the dry run says exactly how many stored rows the new rule
+    would drop, and which, before anything is deleted.
 
     ``sources`` defaults to Yahoo alone, which is the one measured so far.
     Finnhub's company-news carries the same shape of filler — "Stay informed

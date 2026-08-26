@@ -610,3 +610,71 @@ async def test_clinical_runs_without_an_ema_feed_url(db, seeded_stocks, monkeypa
         assert all("clinicaltrials.gov" in url for url in requested)
     finally:
         get_settings.cache_clear()
+
+
+@pytest.mark.asyncio
+async def test_a_company_mentioned_deep_in_someone_elses_story_is_dropped(
+    db, seeded_stocks, monkeypatch
+):
+    """The live case: a rival's press release stored as this company's news.
+
+    "GeoVax Highlights Gedeptin(R) Tumor-Priming Strategy as Immuno-Oncology
+    Enters New Phase" was filed under Replimune at +1.00, because Replimune
+    appeared far down the body as a comparator. Matching the whole body made
+    any passing mention count as authorship.
+    """
+    from app.integrations.yahoo_news import ingest_yahoo_news
+
+    now = datetime.now(timezone.utc)
+    rival = (
+        "GeoVax Labs today announced results for Gedeptin in head and neck "
+        "cancer. " + ("The immuno-oncology field has expanded rapidly. " * 8)
+        + "Analysts compared the approach to Moderna and others."
+    )
+    rss = f"""<rss version="2.0"><channel>
+      <item>
+        <title>GeoVax Highlights Gedeptin Tumor-Priming Strategy</title>
+        <link>https://finance.example.com/rival</link>
+        <description>{rival}</description>
+        <pubDate>{rfc822(now)}</pubDate>
+      </item>
+    </channel></rss>"""
+    mock_http(monkeypatch, lambda request: httpx.Response(200, text=rss))
+    monkeypatch.setattr("app.integrations.yahoo_news.REQUEST_DELAY_SECONDS", 0)
+
+    report = await ingest_yahoo_news(db, ["MRNA"])
+
+    assert report.added == 0
+
+
+@pytest.mark.asyncio
+async def test_a_release_that_names_the_company_in_its_lead_is_kept(
+    db, seeded_stocks, monkeypatch
+):
+    """Headline-only would be too strict; a release names its subject up front.
+
+    Plenty of genuine releases carry a headline about the drug or the result
+    rather than the company, with the company in the dateline or first
+    sentence. Those must survive.
+    """
+    from app.integrations.yahoo_news import ingest_yahoo_news
+
+    now = datetime.now(timezone.utc)
+    lead = (
+        "CAMBRIDGE, Mass. — Moderna Inc. today announced that its candidate "
+        "met the primary endpoint in a pivotal study."
+    )
+    rss = f"""<rss version="2.0"><channel>
+      <item>
+        <title>Wins FDA Approval For Advanced Melanoma Treatment</title>
+        <link>https://finance.example.com/lead</link>
+        <description>{lead}</description>
+        <pubDate>{rfc822(now)}</pubDate>
+      </item>
+    </channel></rss>"""
+    mock_http(monkeypatch, lambda request: httpx.Response(200, text=rss))
+    monkeypatch.setattr("app.integrations.yahoo_news.REQUEST_DELAY_SECONDS", 0)
+
+    report = await ingest_yahoo_news(db, ["MRNA"])
+
+    assert report.added == 1

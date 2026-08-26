@@ -89,18 +89,43 @@ async def fetch_ticker_news(
     return articles
 
 
-def _is_about(ticker: str, headline: str, body: str | None, index: CompanyIndex) -> bool:
-    """Does this story actually name the company whose feed it came from?
+# How much of the body counts as "what this story is about".
+#
+# Matching the whole body was too generous, and a live example showed why:
+# "GeoVax Highlights Gedeptin(R) Tumor-Priming Strategy as Immuno-Oncology
+# Enters New Phase" was stored as Replimune news at +1.00, because Replimune
+# was mentioned somewhere further down as a comparator. A company named in
+# passing is not the subject of the article.
+#
+# A press release names its subject immediately — in the headline, the dateline
+# or the first sentence — while a competitor mention lives in the body. So the
+# window is the headline plus the lead, which keeps the genuine case where the
+# headline omits the name ("Wins FDA Approval For Advanced Melanoma Treatment")
+# and drops the case where the company is a footnote in someone else's story.
+LEAD_CHARS = 400
 
-    Deliberately generous: the headline *or* the body counts, and matching is
-    on the company index rather than a substring, so "Takeda Pharmaceutical
-    Co." is found from a headline that only says "Takeda". The cost of being
-    strict is a real story dropped; the cost of being loose is another
-    company's news scored against this symbol, and only one of those two
-    quietly changes a ranking.
+
+def _is_about(
+    ticker: str,
+    headline: str,
+    body: str | None,
+    index: CompanyIndex,
+    lead_chars: int = LEAD_CHARS,
+) -> bool:
+    """Is this story *about* the company whose feed it came from?
+
+    Matching is on the company index rather than a substring, so "Takeda
+    Pharmaceutical Co." is found from a headline that only says "Takeda", and
+    the search window is the headline plus the opening of the body — see
+    LEAD_CHARS for why that is not the whole body.
+
+    Still errs toward keeping: a mention anywhere in the lead counts, and a
+    bare ticker root counts too. The cost of being strict is a real story
+    dropped; the cost of being loose is another company's news scored against
+    this symbol, and only the second one quietly changes a ranking.
     """
     symbol = ticker.upper()
-    text = f"{headline} {body or ''}"
+    text = f"{headline} {(body or '')[:lead_chars]}"
     if symbol in match_tickers(text, index, limit=10):
         return True
     # A headline can quote the bare symbol without the suffix the feed uses:
