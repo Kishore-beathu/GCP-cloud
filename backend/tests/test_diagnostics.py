@@ -33,6 +33,17 @@ def settings(**overrides) -> SimpleNamespace:
     return SimpleNamespace(**base)
 
 
+async def no_endpoint_probes(client, settings_obj):
+    """The per-endpoint Finnhub sweep, stubbed out.
+
+    probe_sources fans out to five endpoints, and a test that stubs only the
+    three top-level probes leaves those five going to the real network. They
+    were doing exactly that — silently, because the aggregate tests assert
+    about redaction and never look at what came back.
+    """
+    return []
+
+
 def client_returning(response: httpx.Response) -> httpx.AsyncClient:
     return httpx.AsyncClient(transport=httpx.MockTransport(lambda request: response))
 
@@ -229,6 +240,7 @@ async def test_probe_sources_redacts_a_key_the_vendor_echoed(monkeypatch):
     monkeypatch.setattr(diagnostics, "probe_alpha_vantage", echoing)
     monkeypatch.setattr(diagnostics, "probe_sec", fine)
     monkeypatch.setattr(diagnostics, "probe_finnhub", fine)
+    monkeypatch.setattr(diagnostics, "probe_finnhub_endpoints", no_endpoint_probes)
 
     report = await probe_sources(settings(alpha_vantage_api_key=secret))
 
@@ -255,6 +267,7 @@ async def test_redaction_covers_every_configured_credential(monkeypatch):
     monkeypatch.setattr(diagnostics, "probe_finnhub", leaky)
     monkeypatch.setattr(diagnostics, "probe_sec", fine)
     monkeypatch.setattr(diagnostics, "probe_alpha_vantage", fine)
+    monkeypatch.setattr(diagnostics, "probe_finnhub_endpoints", no_endpoint_probes)
 
     report = await probe_sources(settings(finnhub_api_key=finnhub_key))
 
@@ -341,6 +354,7 @@ async def test_the_source_report_carries_the_credential_origin(monkeypatch):
     monkeypatch.setattr(diagnostics, "probe_finnhub", fine)
     monkeypatch.setattr(diagnostics, "probe_sec", fine)
     monkeypatch.setattr(diagnostics, "probe_alpha_vantage", fine)
+    monkeypatch.setattr(diagnostics, "probe_finnhub_endpoints", no_endpoint_probes)
 
     report = await probe_sources(settings())
 

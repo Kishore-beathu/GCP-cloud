@@ -19,6 +19,16 @@ from app.models import AnalystTrend, EarningsReport, Stock
 from app.services import fundamentals
 
 
+async def _nothing_metric(client, ticker, key):
+    """The vendor covers this symbol for everything except valuation.
+
+    Stubbed in every ingest test, because an unstubbed fetcher goes to the real
+    network — which is how a fourth vendor call slipped past three tests that
+    stubbed only the first three.
+    """
+    return None
+
+
 def _trend(**counts) -> AnalystTrend:
     return AnalystTrend(
         ticker_id=1,
@@ -195,6 +205,7 @@ async def test_market_cap_is_stored_in_units_not_millions(db, seeded_stocks, mon
     monkeypatch.setattr(service, "fetch_profile", _profile)
     monkeypatch.setattr(service, "fetch_earnings", _empty)
     monkeypatch.setattr(service, "fetch_recommendations", _empty)
+    monkeypatch.setattr(service, "fetch_metrics", _nothing_metric)
     monkeypatch.setattr(service, "REQUEST_DELAY_SECONDS", 0)
 
     try:
@@ -226,6 +237,7 @@ async def test_a_symbol_the_vendor_does_not_cover_is_named(db, seeded_stocks, mo
     monkeypatch.setattr(service, "fetch_profile", _nothing)
     monkeypatch.setattr(service, "fetch_earnings", _empty)
     monkeypatch.setattr(service, "fetch_recommendations", _empty)
+    monkeypatch.setattr(service, "fetch_metrics", _nothing_metric)
     monkeypatch.setattr(service, "REQUEST_DELAY_SECONDS", 0)
 
     try:
@@ -272,6 +284,7 @@ async def test_non_us_listings_are_skipped_rather_than_asked(db, monkeypatch):
     monkeypatch.setattr(service, "fetch_profile", _profile)
     monkeypatch.setattr(service, "fetch_earnings", _empty)
     monkeypatch.setattr(service, "fetch_recommendations", _empty)
+    monkeypatch.setattr(service, "fetch_metrics", _nothing_metric)
     monkeypatch.setattr(service, "REQUEST_DELAY_SECONDS", 0)
 
     try:

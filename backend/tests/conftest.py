@@ -93,3 +93,36 @@ async def client(session_factory) -> AsyncIterator[AsyncClient]:
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as http_client:
         yield http_client
+
+@pytest.fixture(autouse=True)
+def no_real_network(monkeypatch):
+    """Fail loudly if a test reaches the actual network.
+
+    A test that makes a real request is not testing anything reliable, and it
+    fails differently depending on where it runs. That is not hypothetical
+    here: the fundamentals ingest gained a fourth vendor call, three tests
+    stubbed only the three that existed before, and the new one went out to
+    Finnhub. In a sandbox with blocked egress it failed silently and the suite
+    passed; in CI, with real network, it came back 401 and the suite went red —
+    so the bug was invisible exactly where it was introduced.
+
+    Only the real transport is blocked. ``httpx.MockTransport`` is a different
+    class entirely, so the many tests that serve their own responses through it
+    are untouched.
+    """
+    import httpx
+
+    async def _refuse(self, request, **kwargs):
+        raise RuntimeError(
+            f"Test made a real network request to {request.url}. "
+            "Stub the vendor call, or serve it with httpx.MockTransport."
+        )
+
+    monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", _refuse)
+    monkeypatch.setattr(
+        httpx.HTTPTransport,
+        "handle_request",
+        lambda self, request, **kwargs: (_ for _ in ()).throw(
+            RuntimeError(f"Test made a real network request to {request.url}.")
+        ),
+    )
