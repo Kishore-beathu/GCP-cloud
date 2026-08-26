@@ -46,6 +46,20 @@ $frontend = Join-Path $root 'frontend'
 $python = Join-Path $backend '.venv\Scripts\python.exe'
 
 function Write-Step($message) { Write-Host "==> $message" -ForegroundColor Cyan }
+
+function Show-BackendLog {
+    # Whatever uvicorn said before it gave up. Without this the script reports
+    # a symptom and throws away the explanation sitting in the child's stderr.
+    foreach ($path in @($backendErr, $backendLog)) {
+        if ($path -and (Test-Path $path)) {
+            $tail = Get-Content $path -Tail 20 -ErrorAction SilentlyContinue
+            if ($tail) {
+                Write-Host "--- $(Split-Path -Leaf $path) ---" -ForegroundColor Yellow
+                $tail | ForEach-Object { Write-Host "    $_" }
+            }
+        }
+    }
+}
 function Write-Warn($message) { Write-Host "    $message" -ForegroundColor Yellow }
 
 # --- Preconditions ----------------------------------------------------------
@@ -80,18 +94,26 @@ function Test-PortFree([int]$port) {
 }
 
 function Get-PortHolder([int]$port) {
+    # PID 0 is the Idle pseudo-process, reported for sockets with no live
+    # owner (TIME_WAIT, or a reserved range). It is not killable and naming it
+    # sends you chasing a process that does not exist, so it is filtered out.
     $owners = Get-NetTCPConnection -LocalPort $port -ErrorAction SilentlyContinue |
-        Select-Object -ExpandProperty OwningProcess -Unique
-    if (-not $owners) { return $null }
-    return Get-Process -Id $owners -ErrorAction SilentlyContinue
+        Select-Object -ExpandProperty OwningProcess -Unique |
+        Where-Object { $_ -gt 0 }
+    if (-not $owners) { return @() }
+    return @(Get-Process -Id $owners -ErrorAction SilentlyContinue)
 }
 
 $chosen = $BackendPort
 if (-not (Test-PortFree $BackendPort)) {
-    $holder = Get-PortHolder $BackendPort
-    if ($holder) {
-        Write-Warn "Port $BackendPort is held by $($holder.ProcessName) (PID $($holder.Id))."
-        Write-Warn "Stop it with:  taskkill /PID $($holder.Id) /F"
+    $holders = Get-PortHolder $BackendPort
+    if ($holders.Count -gt 0) {
+        # One line per holder. A reload supervisor and its worker both hold the
+        # socket, and killing one of the pair leaves the other listening.
+        foreach ($holder in $holders) {
+            Write-Warn "Port $BackendPort is held by $($holder.ProcessName) (PID $($holder.Id))."
+            Write-Warn "  Stop it with:  taskkill /PID $($holder.Id) /F"
+        }
     } else {
         # Bind refused with no owner: almost always a Windows reserved range.
         Write-Warn "Port $BackendPort cannot be bound and no process owns it."
@@ -106,14 +128,20 @@ if (-not (Test-PortFree $BackendPort)) {
     Write-Warn "Using port $chosen instead."
 }
 
-$apiUrl = "http://localhost:$chosen"
+# 127.0.0.1, not "localhost": Windows resolves localhost to ::1 first and
+# uvicorn binds IPv4 only, so a health check against the name can fail against
+# a server that is serving perfectly well.
+$apiUrl = "http://127.0.0.1:$chosen"
 
 # --- Backend ----------------------------------------------------------------
 Write-Step "Starting backend on $apiUrl"
-$uvicornArgs = @('-m', 'uvicorn', 'app.main:app', '--port', "$chosen")
+$uvicornArgs = @('-m', 'uvicorn', 'app.main:app', '--host', '127.0.0.1', '--port', "$chosen")
 if ($Reload) { $uvicornArgs += '--reload' }
+$backendLog = Join-Path $root 'backend-startup.log'
+$backendErr = Join-Path $root 'backend-startup.err.log'
 $backendProcess = Start-Process -FilePath $python -ArgumentList $uvicornArgs `
-    -WorkingDirectory $backend -PassThru
+    -WorkingDirectory $backend -PassThru `
+    -RedirectStandardOutput $backendLog -RedirectStandardError $backendErr
 
 # Wait for the API to answer rather than for the process to exist. Startup
 # seeds the universe and starts the scheduler, so "running" and "serving" are
@@ -122,7 +150,8 @@ Write-Step 'Waiting for the API to answer'
 $ready = $false
 foreach ($attempt in 1..60) {
     if ($backendProcess.HasExited) {
-        Write-Error "Backend exited during startup (code $($backendProcess.ExitCode)). Run uvicorn directly to see why."
+        Show-BackendLog
+        Write-Error "Backend exited during startup (code $($backendProcess.ExitCode)). Its output is above, and in $backendErr."
     }
     try {
         $health = Invoke-RestMethod "$apiUrl/health" -TimeoutSec 2
@@ -132,7 +161,8 @@ foreach ($attempt in 1..60) {
     }
 }
 if (-not $ready) {
-    Write-Error "Backend did not answer on $apiUrl within 30s. It is running (PID $($backendProcess.Id)) but not serving."
+    Show-BackendLog
+    Write-Error "Backend did not answer on $apiUrl within 30s. It is running (PID $($backendProcess.Id)) but not serving - its output is above."
 }
 Write-Host "    API ready (PID $($backendProcess.Id))" -ForegroundColor Green
 

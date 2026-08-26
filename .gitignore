@@ -32,3 +32,6 @@ frontend/dist/
 desktop/renderer/
 desktop/release/
 *.tsbuildinfo
+
+# Launcher output, captured so a failed start can be diagnosed.
+backend-startup*.log
