@@ -36,10 +36,11 @@ from app.integrations.finnhub import (
     FinnhubRateLimited,
     FinnhubRejected,
     fetch_earnings,
+    fetch_metrics,
     fetch_profile,
     fetch_recommendations,
 )
-from app.models import AnalystTrend, EarningsReport, Stock
+from app.models import AnalystTrend, EarningsReport, Stock, ValuationSnapshot
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +62,7 @@ class FundamentalsReport:
     profiles_updated: int = 0
     earnings_stored: int = 0
     trends_stored: int = 0
+    valuations_stored: int = 0
     uncovered: list[str] = field(default_factory=list)
     note: str | None = None
 
@@ -71,6 +73,7 @@ class FundamentalsReport:
             "profiles_updated": self.profiles_updated,
             "earnings_stored": self.earnings_stored,
             "trends_stored": self.trends_stored,
+            "valuations_stored": self.valuations_stored,
             "uncovered": self.uncovered,
             "note": self.note,
         }
@@ -171,7 +174,40 @@ async def _refresh_one(
         if await _upsert_trend(db, stock.id, row):
             report.trends_stored += 1
 
+    metrics = await fetch_metrics(client, stock.ticker, api_key)
+    if metrics:
+        covered = True
+        if await _upsert_valuation(db, stock.id, metrics):
+            report.valuations_stored += 1
+
     return covered
+
+
+async def _upsert_valuation(db: AsyncSession, ticker_id: int, metrics: dict) -> bool:
+    """Store today's ratios, or overwrite today's if they have been refetched.
+
+    One row per symbol per day. Re-running the ingest twice in an afternoon
+    should correct today's figures rather than accumulate two versions of them,
+    and yesterday's row is left alone because that is the whole point of
+    snapshotting: a backtest needs the number as it stood, not as it stands.
+    """
+    today = datetime.now(timezone.utc).date()
+    existing = (
+        await db.execute(
+            select(ValuationSnapshot).where(
+                ValuationSnapshot.ticker_id == ticker_id,
+                ValuationSnapshot.captured_on == today,
+            )
+        )
+    ).scalar_one_or_none()
+
+    if existing is None:
+        db.add(ValuationSnapshot(ticker_id=ticker_id, captured_on=today, **metrics))
+        return True
+
+    for column, value in metrics.items():
+        setattr(existing, column, value)
+    return False
 
 
 async def _upsert_earnings(db: AsyncSession, ticker_id: int, row: dict) -> bool:
@@ -281,6 +317,21 @@ class Fundamentals:
     analyst_revision: float | None = None
     analysts_covering: int = 0
 
+    # --- Valuation and quality -----------------------------------------------
+    # Reported, ranked as their own validation strategy, and carrying no weight
+    # in the score. Earnings surprise took the same route and earned a weight
+    # after twelve periods supported it; these have not been measured yet, and
+    # a factor that looks obviously useful is exactly the one to hold to the
+    # rule rather than exempt from it.
+    pe_ratio: float | None = None
+    ps_ratio: float | None = None
+    pb_ratio: float | None = None
+    ev_ebitda: float | None = None
+    gross_margin: float | None = None
+    revenue_growth_yoy: float | None = None
+    return_on_equity: float | None = None
+    valuation_as_of: str | None = None
+
     def as_dict(self) -> dict:
         return {
             "market_cap": self.market_cap,
@@ -288,6 +339,14 @@ class Fundamentals:
             "days_since_earnings": self.days_since_earnings,
             "analyst_revision": self.analyst_revision,
             "analysts_covering": self.analysts_covering,
+            "pe_ratio": self.pe_ratio,
+            "ps_ratio": self.ps_ratio,
+            "pb_ratio": self.pb_ratio,
+            "ev_ebitda": self.ev_ebitda,
+            "gross_margin": self.gross_margin,
+            "revenue_growth_yoy": self.revenue_growth_yoy,
+            "return_on_equity": self.return_on_equity,
+            "valuation_as_of": self.valuation_as_of,
         }
 
 
@@ -313,6 +372,7 @@ def summarise(
     earnings: list[EarningsReport],
     trends: list[AnalystTrend],
     now: datetime | None = None,
+    valuations: list[ValuationSnapshot] | None = None,
 ) -> Fundamentals:
     """Reduce one symbol's stored rows to the factors the ranking uses."""
     now = now or datetime.now(timezone.utc)
@@ -344,17 +404,33 @@ def summarise(
         if latest is not None and previous is not None:
             revision = round(latest - previous, 4)
 
+    # Newest snapshot wins. Older ones stay for the backtest, which needs the
+    # ratio as it stood rather than as it stands.
+    latest_valuation = None
+    if valuations:
+        latest_valuation = max(valuations, key=lambda row: row.captured_on)
+
     return Fundamentals(
         market_cap=stock.market_cap,
         earnings_surprise_pct=surprise,
         days_since_earnings=days_since,
         analyst_revision=revision,
         analysts_covering=covering,
+        pe_ratio=getattr(latest_valuation, "pe_ratio", None),
+        ps_ratio=getattr(latest_valuation, "ps_ratio", None),
+        pb_ratio=getattr(latest_valuation, "pb_ratio", None),
+        ev_ebitda=getattr(latest_valuation, "ev_ebitda", None),
+        gross_margin=getattr(latest_valuation, "gross_margin", None),
+        revenue_growth_yoy=getattr(latest_valuation, "revenue_growth_yoy", None),
+        return_on_equity=getattr(latest_valuation, "return_on_equity", None),
+        valuation_as_of=(
+            latest_valuation.captured_on.isoformat() if latest_valuation else None
+        ),
     )
 
 
 async def load_all(db: AsyncSession) -> dict[int, Fundamentals]:
-    """Every active symbol's factors, in three queries rather than 3N."""
+    """Every active symbol's factors, in four queries rather than 4N."""
     stocks = list(
         (
             await db.execute(select(Stock).where(Stock.is_active.is_(True)))
@@ -378,7 +454,20 @@ async def load_all(db: AsyncSession) -> dict[int, Fundamentals]:
     ).scalars():
         trends.setdefault(row.ticker_id, []).append(row)
 
+    valuations: dict[int, list[ValuationSnapshot]] = {}
+    for row in (
+        await db.execute(
+            select(ValuationSnapshot).where(ValuationSnapshot.ticker_id.in_(by_id))
+        )
+    ).scalars():
+        valuations.setdefault(row.ticker_id, []).append(row)
+
     return {
-        stock.id: summarise(stock, earnings.get(stock.id, []), trends.get(stock.id, []))
+        stock.id: summarise(
+            stock,
+            earnings.get(stock.id, []),
+            trends.get(stock.id, []),
+            valuations=valuations.get(stock.id, []),
+        )
         for stock in stocks
     }

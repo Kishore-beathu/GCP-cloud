@@ -12,6 +12,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 import pytest
+from sqlalchemy import select
 
 from app.integrations.finnhub import _surprise_pct
 from app.models import AnalystTrend, EarningsReport, Stock
@@ -363,3 +364,102 @@ async def test_every_row_says_which_currency_its_market_cap_is_in(client, db):
 
     assert body["rows"][0]["currency"] == "JPY"
     assert "never converted" in body["coverage"]["currency_warning"]
+
+
+# --- Valuation ----------------------------------------------------------------
+
+
+def test_valuation_carries_no_pillar_weight_yet():
+    """The discipline, applied to the factor most tempting to exempt from it.
+
+    Whether a stock is expensive is obviously useful, which is exactly the
+    reasoning that gave the sentiment pillar 0.4 and had to be undone twelve
+    periods later. These are computed, reported and ranked in validate(), and
+    weighted at zero until that measurement supports them.
+    """
+    from app.services import scoring
+
+    assert set(scoring.VALUATION_WEIGHTS)
+    assert all(weight == 0.0 for _, weight, _ in scoring.VALUATION_WEIGHTS.values())
+    assert "valuation" not in scoring.PILLAR_WEIGHTS
+
+
+def test_cheap_ranks_above_expensive():
+    """A multiple is the one factor family where less is better."""
+    from app.services import scoring
+
+    for key in ("pe_ratio", "ps_ratio", "ev_ebitda"):
+        assert key in scoring._INVERTED
+    for key in ("gross_margin", "revenue_growth_yoy", "return_on_equity"):
+        assert key not in scoring._INVERTED
+
+
+@pytest.mark.asyncio
+async def test_valuation_snapshots_are_dated_not_overwritten(db, seeded_stocks):
+    """A backtest needs the ratio as it stood, not as it stands.
+
+    Columns on `stocks` would hand every historical ranking today's P/E, which
+    is the lookahead the earnings ranking is built to avoid.
+    """
+    from datetime import date as date_type
+
+    from app.models import ValuationSnapshot
+
+    stock = seeded_stocks[0]
+    db.add_all(
+        [
+            ValuationSnapshot(
+                ticker_id=stock.id, captured_on=date_type(2026, 6, 1), pe_ratio=12.0
+            ),
+            ValuationSnapshot(
+                ticker_id=stock.id, captured_on=date_type(2026, 8, 1), pe_ratio=30.0
+            ),
+        ]
+    )
+    await db.commit()
+
+    factors = await fundamentals.load_all(db)
+
+    # The reported figure is the newest; the older row survives for the backtest.
+    assert factors[stock.id].pe_ratio == 30.0
+    assert factors[stock.id].valuation_as_of == "2026-08-01"
+    stored = (await db.execute(select(ValuationSnapshot))).scalars().all()
+    assert len(stored) == 2
+
+
+@pytest.mark.asyncio
+async def test_refetching_the_same_day_corrects_rather_than_duplicates(db, seeded_stocks):
+    from app.services.fundamentals import _upsert_valuation
+    from app.models import ValuationSnapshot
+
+    stock = seeded_stocks[0]
+    assert await _upsert_valuation(db, stock.id, {"pe_ratio": 10.0}) is True
+    assert await _upsert_valuation(db, stock.id, {"pe_ratio": 11.0}) is False
+    await db.commit()
+
+    rows = (await db.execute(select(ValuationSnapshot))).scalars().all()
+    assert len(rows) == 1
+    assert rows[0].pe_ratio == 11.0
+
+
+@pytest.mark.asyncio
+async def test_a_vendor_answer_with_no_usable_metric_is_no_coverage(monkeypatch):
+    """All-null is "we do not cover this", which is not the same as a row of nulls."""
+    import httpx
+
+    from app.integrations.finnhub import fetch_metrics
+
+    async def _handler(request):
+        return httpx.Response(200, json={"metric": {"peNormalizedAnnual": None}})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(_handler)) as client:
+        assert await fetch_metrics(client, "MU", "key") is None
+
+    async def _covered(request):
+        return httpx.Response(200, json={"metric": {"peNormalizedAnnual": 18.4}})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(_covered)) as client:
+        result = await fetch_metrics(client, "MU", "key")
+
+    assert result["pe_ratio"] == 18.4
+    assert result["ps_ratio"] is None

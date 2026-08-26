@@ -308,6 +308,66 @@ async def _get(
         return None
 
 
+# The metric keys worth storing, mapped to our column names.
+#
+# A deliberately short list out of the hundred-odd Finnhub returns. Each one
+# answers a question the score cannot currently ask — is this expensive, is it
+# growing, does it convert revenue into profit — and every extra one is a
+# factor that would have to earn its weight through validate() like the others.
+# Adding ninety more because they are in the payload is how a score stops being
+# explainable.
+_METRIC_KEYS = {
+    "peNormalizedAnnual": "pe_ratio",
+    "psAnnual": "ps_ratio",
+    "pbAnnual": "pb_ratio",
+    "evEbitdaAnnual": "ev_ebitda",
+    "grossMarginAnnual": "gross_margin",
+    "revenueGrowthTTMYoy": "revenue_growth_yoy",
+    "roeTTM": "return_on_equity",
+}
+
+
+async def fetch_metrics(
+    client: httpx.AsyncClient, ticker: str, api_key: str
+) -> dict | None:
+    """Valuation and quality ratios for one symbol.
+
+    The largest capability gap against a commercial score: this platform could
+    say a stock had good news and rising price, and nothing about whether it
+    was expensive.
+
+    Ratios are stored as reported, which means they carry the vendor's
+    conventions — a negative P/E for a loss-making company, nulls where a ratio
+    is undefined. Neither is cleaned up here: a made-up number would rank, and
+    ranking is exactly what this data is for.
+    """
+    payload = await _get(
+        client,
+        "/stock/metric",
+        {"symbol": ticker, "metric": "all", "token": api_key},
+        ticker,
+    )
+    if not isinstance(payload, dict):
+        return None
+    metrics = payload.get("metric")
+    if not isinstance(metrics, dict) or not metrics:
+        return None
+
+    values: dict[str, float | None] = {}
+    for vendor_key, column in _METRIC_KEYS.items():
+        raw = metrics.get(vendor_key)
+        try:
+            values[column] = float(raw) if raw is not None else None
+        except (TypeError, ValueError):
+            values[column] = None
+
+    # Every field null means the vendor answered without covering this symbol,
+    # which is a different fact from "covered, and these are the numbers".
+    if not any(value is not None for value in values.values()):
+        return None
+    return values
+
+
 async def fetch_profile(
     client: httpx.AsyncClient, ticker: str, api_key: str
 ) -> dict | None:

@@ -38,12 +38,19 @@ actually used.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import EarningsReport, NewsArticle, SentimentScore, Stock, StockPrice
+from app.models import (
+    EarningsReport,
+    NewsArticle,
+    SentimentScore,
+    Stock,
+    StockPrice,
+    ValuationSnapshot,
+)
 from app.services import sectors, technicals
 from app.services.technicals import Technicals
 
@@ -110,6 +117,8 @@ class StockScore:
     # zero, which is exactly the kind of confident-looking wrong thing this
     # design exists to avoid.
     fundamental_factors: list[Factor] = field(default_factory=list)
+    # Reported and ranked, weighted at zero. See VALUATION_WEIGHTS.
+    valuation_factors: list[Factor] = field(default_factory=list)
     rank: int = 0
     universe_size: int = 0
     # Named "sector" for the API's sake, but scoped to the *group* — see the
@@ -137,6 +146,7 @@ class StockScore:
             "fundamental_score": self.fundamental_score,
             "fundamental_imputed": self.fundamental_imputed,
             "fundamental_factors": [factor.as_dict() for factor in self.fundamental_factors],
+            "valuation_factors": [factor.as_dict() for factor in self.valuation_factors],
             "rank": self.rank,
             "universe_size": self.universe_size,
             "sector_rank": self.sector_rank,
@@ -162,7 +172,17 @@ TECHNICAL_WEIGHTS: dict[str, tuple[str, float, str]] = {
 # Volatility is the one factor where less is better, so its percentile is
 # inverted before weighting. Momentum is not: this is a trend-following score
 # by construction, and saying so beats hiding it in a sign.
-_INVERTED = frozenset({"volatility_21d"})
+_INVERTED = frozenset(
+    {
+        "volatility_21d",
+        # Cheap ranks above expensive. A negative P/E — a loss-making company —
+        # then ranks as the cheapest thing in the universe, which is why these
+        # carry no weight until validate() has had a look at them.
+        "pe_ratio",
+        "ps_ratio",
+        "ev_ebitda",
+    }
+)
 
 SENTIMENT_WEIGHTS: dict[str, tuple[str, float, str]] = {
     "sentiment_mean_30d": ("Average news sentiment", 0.45, "Tone over 30 days"),
@@ -230,6 +250,7 @@ def strategy_names() -> tuple[str, ...]:
     factors = (
         *TECHNICAL_WEIGHTS,
         *SENTIMENT_WEIGHTS,
+        *VALUATION_WEIGHTS,
         "earnings_surprise_pct",
     )
     return (
@@ -264,6 +285,30 @@ def strategy_names() -> tuple[str, ...]:
 FUNDAMENTAL_WEIGHTS: dict[str, tuple[str, float, str]] = {
     "earnings_surprise_pct": ("Earnings surprise", 0.55, "Last quarter versus consensus"),
     "analyst_revision": ("Analyst revision", 0.45, "Opinion shift over the last month"),
+}
+
+# Valuation and quality, carrying **no** weight in any pillar.
+#
+# The largest capability gap against a commercial score was that this could say
+# a stock had good news and rising price and nothing about whether it was
+# expensive. These close it — and they close it the same way earnings surprise
+# did: computed, reported, ranked as their own strategy in validate(), and
+# weightless until the measurement supports them.
+#
+# The temptation is to skip that for a factor this obviously sensible. It is
+# exactly the factor to hold to the rule: the sentiment pillar was given 0.4 on
+# reasoning just as sound, and twelve periods later had to be cut.
+#
+# Cheap is scored higher for the three multiples — a low P/E ranks above a high
+# one — so they are inverted, like volatility. Margin, growth and return on
+# equity are not: more is better and the ranking says so.
+VALUATION_WEIGHTS: dict[str, tuple[str, float, str]] = {
+    "pe_ratio": ("Price / earnings", 0.0, "Lower is scored higher"),
+    "ps_ratio": ("Price / sales", 0.0, "Lower is scored higher"),
+    "ev_ebitda": ("EV / EBITDA", 0.0, "Lower is scored higher"),
+    "gross_margin": ("Gross margin", 0.0, "Higher is scored higher"),
+    "revenue_growth_yoy": ("Revenue growth", 0.0, "Year on year"),
+    "return_on_equity": ("Return on equity", 0.0, "Trailing twelve months"),
 }
 
 # Below this many sessions the technical pillar is not computed at all. Twenty
@@ -348,6 +393,7 @@ class _Raw:
     sentiment: dict[str, float | None]
     news_count: int
     fundamentals: dict[str, float | None] = field(default_factory=dict)
+    valuation: dict[str, float | None] = field(default_factory=dict)
 
 
 def percentile_ranks(values: dict[str, float | None]) -> dict[str, float | None]:
@@ -441,6 +487,7 @@ async def _load_inputs(db: AsyncSession, days: int) -> list[_Raw]:
             sentiment=_summarise_news(news.get(stock.id, []), days),
             news_count=len(news.get(stock.id, [])),
             fundamentals=_fundamental_values(factors.get(stock.id)),
+            valuation=_valuation_values(factors.get(stock.id)),
         )
         for stock in stocks
     ]
@@ -454,6 +501,13 @@ def _fundamental_values(factor) -> dict[str, float | None]:
         "earnings_surprise_pct": factor.earnings_surprise_pct,
         "analyst_revision": factor.analyst_revision,
     }
+
+
+def _valuation_values(factor) -> dict[str, float | None]:
+    """The stored valuation ratios, keyed to match VALUATION_WEIGHTS."""
+    if factor is None:
+        return {key: None for key in VALUATION_WEIGHTS}
+    return {key: getattr(factor, key, None) for key in VALUATION_WEIGHTS}
 
 
 def _summarise_news(
@@ -589,6 +643,13 @@ async def score_universe(db: AsyncSession, days: int = 30) -> list[StockScore]:
     fundamental_ranks = {
         key: percentile_ranks(values) for key, values in fundamental_values.items()
     }
+    valuation_values = {
+        key: {raw.stock.ticker: raw.valuation.get(key) for raw in inputs}
+        for key in VALUATION_WEIGHTS
+    }
+    valuation_ranks = {
+        key: percentile_ranks(values) for key, values in valuation_values.items()
+    }
 
     scored: list[StockScore] = []
     for raw in inputs:
@@ -603,6 +664,13 @@ async def score_universe(db: AsyncSession, days: int = 30) -> list[StockScore]:
         )
         fundamental, fundamental_factors, _ = _pillar(
             raw, fundamental_ranks, FUNDAMENTAL_WEIGHTS, raw.fundamentals
+        )
+        # Weightless, so kept out of `factors` for the same reason earnings
+        # surprise was until it measured: that list is the score's arithmetic,
+        # and an entry contributing zero would sort above real ones while
+        # moving the number not at all.
+        _, valuation_factors, _ = _pillar(
+            raw, valuation_ranks, VALUATION_WEIGHTS, raw.valuation
         )
 
         blended = _blend(technical, sentiment, raw.news_count, fundamental)
@@ -624,6 +692,7 @@ async def score_universe(db: AsyncSession, days: int = 30) -> list[StockScore]:
                 fundamental_score=fundamental,
                 fundamental_imputed=fundamental is None,
                 fundamental_factors=fundamental_factors,
+                valuation_factors=valuation_factors,
                 # What share of the intended inputs this score actually used.
                 coverage=round(weight_total, 2),
                 factors=sorted(
@@ -838,6 +907,7 @@ def _rank_at(
     news: dict[str, list[tuple[datetime, float, str]]],
     news_days: int,
     earnings: dict[str, list[tuple[datetime, float]]] | None = None,
+    valuations: dict[str, list[tuple[date, dict[str, float | None]]]] | None = None,
 ) -> dict[str, list[tuple[str, float]]]:
     """Rank the universe as it stood at ``as_of``, three ways.
 
@@ -903,6 +973,29 @@ def _rank_at(
     # Inverted factors are inverted here too. Volatility is scored so that less
     # is better, and ranking it raw would report the opposite of the factor the
     # score actually uses.
+    # Valuation as it stood at as_of: the newest snapshot captured on or
+    # before that date. Taking the latest stored one would hand every past date
+    # a ratio computed months later, which is the lookahead the earnings
+    # ranking already goes out of its way to avoid.
+    as_of_date = as_of.date()
+    valuation_at: dict[str, dict[str, float | None]] = {}
+    for symbol in tech_inputs:
+        history_rows = [
+            row for row in (valuations or {}).get(symbol, []) if row[0] <= as_of_date
+        ]
+        if history_rows:
+            valuation_at[symbol] = max(history_rows, key=lambda row: row[0])[1]
+
+    for key in VALUATION_WEIGHTS:
+        ranks = percentile_ranks(
+            {symbol: valuation_at.get(symbol, {}).get(key) for symbol in tech_inputs}
+        )
+        rankings[f"{FACTOR_PREFIX}{key}"] = [
+            (symbol, 100 - value if key in _INVERTED else value)
+            for symbol, value in ranks.items()
+            if value is not None
+        ]
+
     for key, ranks in (*tech_ranks.items(), *sent_ranks.items()):
         rankings[f"{FACTOR_PREFIX}{key}"] = [
             (symbol, 100 - value if key in _INVERTED else value)
@@ -1072,6 +1165,21 @@ async def validate(
         moment = period if period.tzinfo else period.replace(tzinfo=timezone.utc)
         earnings.setdefault(by_id[ticker_id], []).append((moment, surprise))
 
+    # Valuation snapshots, keyed by the date the vendor was asked. Snapshots
+    # only start accumulating the first time the ingest runs, so an as_of
+    # earlier than that ranks nothing and _spread reports too_few_symbols —
+    # which is the honest answer, and turns into a real measurement as history
+    # builds rather than needing the wiring to change later.
+    valuations: dict[str, list[tuple[date, dict[str, float | None]]]] = {}
+    for row in (
+        await db.execute(
+            select(ValuationSnapshot).where(ValuationSnapshot.ticker_id.in_(by_id))
+        )
+    ).scalars():
+        valuations.setdefault(by_id[row.ticker_id], []).append(
+            (row.captured_on, {key: getattr(row, key, None) for key in VALUATION_WEIGHTS})
+        )
+
     results: list[dict] = []
     for index in range(periods):
         as_of = now - timedelta(days=as_of_days_ago + index * step_days)
@@ -1088,7 +1196,10 @@ async def validate(
         if len(forward) < 10:
             continue
 
-        rankings = _rank_at(as_of, history, news, news_days=30, earnings=earnings)
+        rankings = _rank_at(
+            as_of, history, news, news_days=30, earnings=earnings,
+            valuations=valuations,
+        )
         # Every period carries every strategy, whether or not this period could
         # rank it. A key present in some periods and absent from others makes
         # the summary a lottery, and _spread already reports *why* a ranking

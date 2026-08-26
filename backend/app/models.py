@@ -8,11 +8,12 @@ equivalent for teams that prefer to provision the schema by hand.
 from __future__ import annotations
 
 import enum
-from datetime import datetime
+from datetime import date, datetime
 
 from sqlalchemy import (
     JSON,
     Boolean,
+    Date,
     DateTime,
     Float,
     ForeignKey,
@@ -341,6 +342,49 @@ class EarningsReport(Base):
     )
 
     stock: Mapped[Stock] = relationship()
+
+
+class ValuationSnapshot(Base):
+    """Valuation and quality ratios for one symbol, as at one date.
+
+    A snapshot table rather than columns on ``stocks`` for one reason: a
+    backtest has to know what a ratio *was*, not what it is. Overwriting a
+    P/E in place would make every historical ranking use today's figure, which
+    is the same lookahead the earnings-surprise ranking goes out of its way to
+    avoid.
+
+    Ratios are stored as the vendor reports them, including negatives and
+    nulls. A loss-making company has a negative P/E and that is true; a company
+    with no debt has no EV/EBITDA and that is true as well. Substituting a
+    number for either would produce a rank out of an absence.
+    """
+
+    __tablename__ = "valuation_snapshots"
+    __table_args__ = (
+        UniqueConstraint(
+            "ticker_id", "captured_on", name="uq_valuation_ticker_captured"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    ticker_id: Mapped[int] = mapped_column(
+        ForeignKey("stocks.id", ondelete="CASCADE"), index=True
+    )
+    # The date the vendor was asked, not a fiscal period: these are trailing
+    # and annual figures that move whenever the vendor recomputes them.
+    captured_on: Mapped[date] = mapped_column(Date, index=True)
+
+    pe_ratio: Mapped[float | None] = mapped_column(Float)
+    ps_ratio: Mapped[float | None] = mapped_column(Float)
+    pb_ratio: Mapped[float | None] = mapped_column(Float)
+    ev_ebitda: Mapped[float | None] = mapped_column(Float)
+    gross_margin: Mapped[float | None] = mapped_column(Float)
+    revenue_growth_yoy: Mapped[float | None] = mapped_column(Float)
+    return_on_equity: Mapped[float | None] = mapped_column(Float)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
 
 
 class AnalystTrend(Base):
