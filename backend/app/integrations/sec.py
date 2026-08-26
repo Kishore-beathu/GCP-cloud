@@ -22,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.models import Stock
+from app.services.filing_text import TARGET_ITEM, prepare
 from app.services.ingest import IngestReport, RawArticle, store_articles
 
 logger = logging.getLogger(__name__)
@@ -119,9 +120,20 @@ async def fetch_ticker_cik_map(client: httpx.AsyncClient) -> dict[str, str]:
 
 
 async def fetch_sec_filings(
-    client: httpx.AsyncClient, ticker: str, cik: str, limit: int = 10
+    client: httpx.AsyncClient,
+    ticker: str,
+    cik: str,
+    limit: int = 10,
+    read_text: bool = True,
 ) -> list[RawArticle]:
-    """Fetch a company's most recent filings as ``RawArticle`` items."""
+    """Fetch a company's most recent filings as ``RawArticle`` items.
+
+    ``read_text`` fetches the document itself for 8-Ks reporting Item 8.01 and
+    uses its narrative as the article body. Without it the body is the item
+    code expanded to its title — "Other Events" — which is what the filing is
+    filed under rather than what it says, and which scores exactly zero.
+    One extra request per qualifying filing, and only for that one item type.
+    """
     url = SUBMISSIONS_URL.format(cik=cik)
     try:
         response = await client.get(url, headers=_headers(), timeout=30.0)
@@ -186,12 +198,20 @@ async def fetch_sec_filings(
         if description and description not in headline_detail:
             body_parts.append(description)
 
+        body = " ".join(body_parts)
+        # The narrative, where there is one. An 8-K's item code says which
+        # drawer it was filed in; the document says the trial met its endpoint.
+        if read_text and form == "8-K" and TARGET_ITEM in (item_codes or ""):
+            narrative = await _read_filing_text(client, cik, accession, document)
+            if narrative:
+                body = f"{body} {narrative}"
+
         articles.append(
             RawArticle(
                 ticker=ticker,
                 headline=f"{company} filed {form}"
                 + (f": {headline_detail}" if headline_detail else ""),
-                body=" ".join(body_parts),
+                body=body,
                 url=ARCHIVE_URL.format(
                     cik=str(int(cik)), accession=accession, document=document
                 ),
@@ -201,6 +221,30 @@ async def fetch_sec_filings(
         )
 
     return articles
+
+
+async def _read_filing_text(
+    client: httpx.AsyncClient, cik: str, accession: str, document: str
+) -> str | None:
+    """The Item 8.01 narrative from one filing, or None.
+
+    Every failure is soft. A filing whose document cannot be fetched or parsed
+    still produces an article from its metadata, which is what the platform had
+    before this existed — a missing body loses signal, a raised exception loses
+    the whole ingest.
+    """
+    url = ARCHIVE_URL.format(cik=str(int(cik)), accession=accession, document=document)
+    try:
+        response = await client.get(url, headers=_headers(), timeout=30.0)
+        response.raise_for_status()
+    except httpx.HTTPError as exc:
+        logger.debug("Could not read filing text at %s: %s", url, exc)
+        return None
+    try:
+        return prepare(response.text)
+    except Exception:  # noqa: BLE001 - filings are malformed in creative ways
+        logger.debug("Could not parse filing text at %s", url)
+        return None
 
 
 async def _resolve_ciks(db: AsyncSession, stocks: list[Stock], client: httpx.AsyncClient) -> None:
