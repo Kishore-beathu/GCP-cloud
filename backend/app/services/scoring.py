@@ -940,7 +940,26 @@ async def validate(
             and period[strategy].get("distinct_scores", 0) >= WELL_DISPERSED_MIN_DISTINCT
         ]
 
+        # How many symbols this strategy actually ranked, averaged over the
+        # periods it ranked any. Not decoration: the strategies do not rank the
+        # same universe. Technical needs price history, which nearly everything
+        # has; fundamental needs a reported earnings surprise, which only the
+        # vendor-covered US listings have. Comparing a mean spread over ~100
+        # large US names against one over ~220 symbols spanning four continents
+        # and as many currencies is not comparing two factors — the smaller,
+        # more homogeneous sample has less dispersion in forward returns for
+        # reasons that have nothing to do with whether the factor works. The
+        # count belongs beside the number it qualifies.
+        ranked_counts = [
+            period[strategy]["symbols"]
+            for period in results
+            if period[strategy].get("symbols")
+        ]
         entry: dict = {"periods": len(spreads)}
+        if ranked_counts:
+            entry["mean_symbols_ranked"] = round(
+                sum(ranked_counts) / len(ranked_counts), 1
+            )
         if spreads:
             entry.update(
                 {

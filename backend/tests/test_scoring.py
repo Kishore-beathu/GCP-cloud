@@ -684,3 +684,37 @@ async def test_the_backtest_only_sees_quarters_reported_by_then(db):
     # nothing to rank and must report that rather than borrowing the future.
     fundamental = result["summary"].get("fundamental", {})
     assert fundamental.get("periods", 0) == 0
+
+
+@pytest.mark.asyncio
+async def test_validation_reports_how_many_symbols_each_strategy_ranked(db):
+    """The strategies do not rank the same universe, and the summary hid it.
+
+    Technical needs price history, which nearly everything has. Fundamental
+    needs a reported earnings surprise, which only the vendor-covered US
+    listings have — on a real run that was ~100 large US names against ~220
+    symbols spanning four continents and as many currencies. Two mean spreads
+    printed side by side read as two measurements of two factors; they are
+    measurements over different samples, and the smaller, more homogeneous one
+    has less dispersion in forward returns whether or not its factor works.
+    """
+    stocks = [
+        Stock(ticker=f"N{index:02d}", company_name=f"Sample {index}", sector="pharma")
+        for index in range(20)
+    ]
+    db.add_all(stocks)
+    await db.commit()
+    for stock in stocks:
+        await db.refresh(stock)
+
+    now = datetime.now(timezone.utc)
+    for index, stock in enumerate(stocks):
+        rate = 1.004 if index < 10 else 0.996
+        await add_prices(db, stock, [100.0 * rate**day for day in range(220)], end=now)
+
+    result = await scoring.validate(
+        db, as_of_days_ago=25, horizon_days=15, periods=3, step_days=20
+    )
+
+    technical = result["summary"]["technical"]
+    assert technical["mean_symbols_ranked"] == 20
