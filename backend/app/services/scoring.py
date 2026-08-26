@@ -22,9 +22,11 @@ its peers) and deliberately not their claims:
   anything on *your* data is a separate, measurable question, answered by
   `scoring.validate()` rather than asserted here.
 
-Two pillars, because they are what the stored data supports: price behaviour
-and news. Fundamentals are absent and their absence is stated rather than
-papered over — see docs/COMPARISON.md.
+Three pillars: price behaviour, news, and earnings surprise with analyst
+revisions. The third was added weightless and stayed that way until
+`validate()` measured it over twelve periods — see PILLAR_WEIGHTS. Valuation
+is still absent and its absence is stated rather than papered over; see
+docs/COMPARISON.md.
 
 The news pillar's weight is not fixed: it scales with how many articles stand
 behind it, so a symbol with one story is ranked mostly on its price rather than
@@ -167,7 +169,19 @@ SENTIMENT_WEIGHTS: dict[str, tuple[str, float, str]] = {
 # How the two pillars combine. Price behaviour is weighted higher because it is
 # measured for every symbol with history, while news coverage is uneven — a
 # thinly covered listing would otherwise be ranked mostly on noise.
-PILLAR_WEIGHTS = {"technical": 0.6, "sentiment": 0.4}
+# Set by measurement, not by assumption — see scoring.validate() and the
+# reasoning in FUNDAMENTAL_WEIGHTS below. Over twelve periods on this universe
+# the fundamental ranking was the only one whose top-minus-bottom spread was
+# distinguishable from zero (t 4.3, positive in 11 of 12 periods); technical
+# and sentiment both sat inside their own noise, and sentiment's mean spread
+# was negative.
+#
+# Sentiment keeps a reduced weight rather than none. Its negative result is not
+# statistically significant, and it ranks only about a third of the universe,
+# so "not shown to work" is the honest reading rather than "shown not to" —
+# and zeroing it would also discard news volume, which is the only signal here
+# that a symbol is being talked about at all.
+PILLAR_WEIGHTS = {"technical": 0.5, "sentiment": 0.15, "fundamental": 0.35}
 
 # The weight above is what the sentiment pillar earns at *full* coverage. Held
 # flat it says a symbol with one article deserves the same 40% of its rank as a
@@ -178,19 +192,27 @@ PILLAR_WEIGHTS = {"technical": 0.6, "sentiment": 0.4}
 # is deliberately not tuned against the validation window it is measured in.
 SENTIMENT_FULL_WEIGHT_ARTICLES = 5
 
-# The fundamental factors, and the reason they carry no pillar weight.
+# The fundamental factors, and how they earned their pillar weight.
 #
 # Earnings surprise and analyst revisions have stronger published evidence
 # behind them than anything else here — post-earnings drift and revisions
-# momentum are among the most replicated effects in the literature. That is a
-# reason to measure them, not to trust them: the sentiment pillar was given
-# 0.4 on the equally reasonable assumption that news matters, and twelve
-# periods later the honest reading was that it had not been shown to.
+# momentum are among the most replicated effects in the literature. That was a
+# reason to measure them, not to trust them: the sentiment pillar was given 0.4
+# on the equally reasonable assumption that news matters, and twelve periods
+# later the honest reading was that it had not been shown to.
 #
-# So these are computed, reported on every score, and ranked as their own
-# strategy inside validate(). If that measurement holds up on this universe
-# they earn a weight. Until then the blend is unchanged and the number is
-# there to be checked rather than acted on.
+# So they shipped computed, reported and ranked as their own strategy inside
+# validate(), carrying no weight, explicitly pending that measurement. The
+# measurement came back: mean spread +3.21 over twelve periods, positive in
+# eleven of them, standard deviation 2.61 against technical's 10.73. The
+# obvious objection — that it ranks half as many symbols — runs the wrong way,
+# since fewer names per quintile makes bucket means noisier, not steadier.
+#
+# What that does not settle: the periods are sequential rather than independent
+# draws and share a market regime, the universe is today's active symbols so
+# anything delisted mid-window is missing, and the vendor supplies only about
+# four months of analyst trends, so the earliest periods rank on earnings
+# surprise alone. Re-run validate() as history accumulates.
 FUNDAMENTAL_WEIGHTS: dict[str, tuple[str, float, str]] = {
     "earnings_surprise_pct": ("Earnings surprise", 0.55, "Last quarter versus consensus"),
     "analyst_revision": ("Analyst revision", 0.45, "Opinion shift over the last month"),
@@ -213,7 +235,10 @@ def sentiment_confidence(news_count: int) -> float:
 
 
 def _blend(
-    technical: float | None, sentiment: float | None, news_count: int
+    technical: float | None,
+    sentiment: float | None,
+    news_count: int,
+    fundamental: float | None = None,
 ) -> tuple[float, float] | None:
     """Combine the pillars, discounting sentiment by the news behind it.
 
@@ -237,6 +262,13 @@ def _blend(
         if confidence:
             weights["sentiment"] = PILLAR_WEIGHTS["sentiment"] * confidence
             values["sentiment"] = sentiment
+    # Absent for any symbol the vendor does not cover, which is most non-US
+    # listings. Missing means excluded and the rest reweighted, exactly as a
+    # missing sentiment pillar behaves — `coverage` reports how much of the
+    # intended input the score was actually built from.
+    if fundamental is not None:
+        weights["fundamental"] = PILLAR_WEIGHTS["fundamental"]
+        values["fundamental"] = fundamental
 
     total = sum(weights.values())
     if not total:
@@ -506,12 +538,11 @@ async def score_universe(db: AsyncSession, days: int = 30) -> list[StockScore]:
         sentiment, sentiment_factors, _ = _pillar(
             raw, sentiment_ranks, SENTIMENT_WEIGHTS, raw.sentiment
         )
-        # Computed and reported; deliberately absent from _blend below.
         fundamental, fundamental_factors, _ = _pillar(
             raw, fundamental_ranks, FUNDAMENTAL_WEIGHTS, raw.fundamentals
         )
 
-        blended = _blend(technical, sentiment, raw.news_count)
+        blended = _blend(technical, sentiment, raw.news_count, fundamental)
         if blended is None:
             continue
         composite, weight_total = blended
@@ -532,7 +563,7 @@ async def score_universe(db: AsyncSession, days: int = 30) -> list[StockScore]:
                 # What share of the intended inputs this score actually used.
                 coverage=round(weight_total, 2),
                 factors=sorted(
-                    technical_factors + sentiment_factors,
+                    technical_factors + sentiment_factors + fundamental_factors,
                     key=lambda factor: factor.contribution,
                     reverse=True,
                 ),
@@ -739,14 +770,15 @@ def _rank_at(
             rankings["technical"].append((symbol, technical))
         if sentiment is not None:
             rankings["sentiment"].append((symbol, sentiment))
-        # Ranked on its own so it can be judged before it is weighted. It is
-        # deliberately not in `blended`: the live score does not use it, and a
-        # backtest of a blend nobody is served would measure nothing.
+        # Ranked on its own as well as inside the blend, so the pillar can
+        # still be judged separately from the mixture it now contributes to.
         fundamental = surprise_ranks.get(symbol)
         if fundamental is not None:
             rankings["fundamental"].append((symbol, fundamental))
 
-        blended = _blend(technical, sentiment, sent_counts.get(symbol, 0))
+        blended = _blend(
+            technical, sentiment, sent_counts.get(symbol, 0), fundamental
+        )
         if blended is not None:
             rankings["blended"].append((symbol, blended[0]))
 

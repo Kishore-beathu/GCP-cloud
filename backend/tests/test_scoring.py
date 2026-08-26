@@ -600,14 +600,19 @@ async def test_validation_reports_the_dispersed_subset(db):
 
 
 @pytest.mark.asyncio
-async def test_fundamentals_are_reported_but_do_not_move_the_score(db, seeded_stocks):
-    """The whole discipline, in one assertion.
+async def test_fundamentals_move_the_score_now_that_they_measured(db, seeded_stocks):
+    """The other half of the discipline: a factor that measures well gets used.
 
-    Earnings surprise has stronger published evidence than anything else here,
-    which is a reason to measure it rather than to trust it — the sentiment
-    pillar got 0.4 on the same reasoning and twelve periods later had not
-    earned it. So the factor is computed and shown, and the blend is untouched
-    until validate() says otherwise.
+    This shipped weightless on purpose — earnings surprise has the strongest
+    published evidence here, and the sentiment pillar was given 0.4 on the same
+    kind of reasoning and twelve periods later had not earned it. The
+    measurement then came back: mean spread +3.21 over twelve periods, positive
+    in eleven, standard deviation 2.61 against technical's 10.73. So it carries
+    weight, and the assertion flips with it.
+
+    What must not change is the claim `factors` makes. It is the list whose
+    contributions sum to the score, so a weighted factor now has to be in it —
+    for exactly the reason an unweighted one had to be kept out.
     """
     from app.models import EarningsReport
 
@@ -636,14 +641,66 @@ async def test_fundamentals_are_reported_but_do_not_move_the_score(db, seeded_st
     assert scored[beat.ticker].fundamental_score > scored[missed.ticker].fundamental_score
     assert scored[beat.ticker].fundamental_factors
 
-    # But absent from the score's arithmetic: `factors` is the list whose
-    # contributions sum to the score, and a factor with no weight in it would
-    # make that claim false.
-    assert all(
-        factor.key not in scoring.FUNDAMENTAL_WEIGHTS
+    # And now part of the score's arithmetic, which is what `factors` claims.
+    assert any(
+        factor.key in scoring.FUNDAMENTAL_WEIGHTS
         for factor in scored[beat.ticker].factors
     )
-    assert "fundamental" not in scoring.PILLAR_WEIGHTS
+    assert scoring.PILLAR_WEIGHTS["fundamental"] > 0
+    # The beat outranks the miss on otherwise identical price history, which is
+    # the weight actually doing something rather than merely existing.
+    assert scored[beat.ticker].score > scored[missed.ticker].score
+
+
+@pytest.mark.asyncio
+async def test_a_symbol_without_earnings_coverage_is_reweighted_not_penalised(
+    db, seeded_stocks
+):
+    """Most non-US listings have no vendor coverage, and absent is not zero.
+
+    Scored as a zero percentile they would sink to the bottom of every ranking
+    on a fact about the data vendor rather than about the company. Missing
+    means excluded and the remaining pillars reweighted — the same treatment a
+    symbol with no news already gets — and `coverage` says how much of the
+    intended input the score was built from.
+    """
+    from app.models import EarningsReport
+
+    # Three symbols, because a percentile needs peers: one surprise on its own
+    # ranks at the midpoint however bad it is, which would make this pass for
+    # the wrong reason.
+    beat = Stock(ticker="AAA", company_name="Beat", sector="pharma")
+    missed = Stock(ticker="BBB", company_name="Missed", sector="pharma")
+    uncovered = Stock(ticker="CCC", company_name="Uncovered", sector="pharma")
+    db.add_all([beat, missed, uncovered])
+    await db.commit()
+    for stock in (beat, missed, uncovered):
+        await db.refresh(stock)
+        await add_prices(db, stock, [100.0 * 1.002**day for day in range(80)])
+
+    now = datetime.now(timezone.utc)
+    db.add_all(
+        [
+            EarningsReport(
+                ticker_id=beat.id, period=now - timedelta(days=10), eps_surprise_pct=40.0
+            ),
+            EarningsReport(
+                ticker_id=missed.id,
+                period=now - timedelta(days=10),
+                eps_surprise_pct=-40.0,
+            ),
+        ]
+    )
+    await db.commit()
+
+    scored = {item.ticker: item for item in await scoring.score_universe(db)}
+    covered = beat
+
+    assert scored[uncovered.ticker].fundamental_score is None
+    # Reported as built from less input, not marked down for it.
+    assert scored[uncovered.ticker].coverage < scored[covered.ticker].coverage
+    # A bad surprise is what moves a score down; having no surprise is not.
+    assert scored[uncovered.ticker].score > scored[missed.ticker].score
 
 
 @pytest.mark.asyncio

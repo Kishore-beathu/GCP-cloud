@@ -47,11 +47,13 @@ Its real advantages are ones the large platforms structurally cannot offer:
 
 Ranked by how much they limit the product today:
 
-1. **No fundamentals or estimates.** You can see that a stock had good news
-   and rising price; you cannot see whether it is expensive. This is now the
-   single largest gap, because it is a whole missing pillar of the score rather
-   than a missing feature. Finnhub's `/stock/metric` and `/stock/recommendation`
-   endpoints would close much of it with the key you already have.
+1. **No valuation.** Earnings surprise and analyst revisions are now a
+   weighted pillar of the score, and market cap is stored — but nothing here
+   tells you whether a stock is *expensive*. There are no multiples, no
+   estimates beyond the next quarter's consensus EPS, and no cash-flow data.
+   Coverage is also uneven: the vendor's free tier is US-only, so roughly half
+   the universe has no fundamental input at all and is scored on the remaining
+   pillars with `coverage` reporting the shortfall.
 2. **Filing metadata, not filing text.** The platform reads *that* an 8-K was
    filed and which items it reported, not what it said. Fetching the primary
    document and scoring its text is the single biggest signal upgrade
@@ -111,7 +113,7 @@ description of the *category* rather than a current fact sheet.
 | | Danelfin (as I understand it) | This platform |
 |---|---|---|
 | Score | AI Score 1–10, stated as probability of beating the market over ~3 months | 0–100 percentile rank. **No probability claim** |
-| Pillars | Fundamental, technical, sentiment | Technical, sentiment. **No fundamentals** |
+| Pillars | Fundamental, technical, sentiment | Technical, sentiment, fundamental — the last weighted only after it measured, and US-listed coverage only |
 | Features | ~900 per stock per day, machine-learned weights | 9 named factors, hand-set weights, arithmetic shown in full |
 | Explainability | Top features driving the score | Every factor, its raw value, percentile, weight and contribution |
 | Track record | Published, multi-year, third-party visible | `GET /scores/validation` measured on *your* data: several start dates, each pillar separately, reported with its caveats |
@@ -151,8 +153,8 @@ will tell you when it is not working.
 
 1. **Fetch and score SEC filing text**, not just item codes — biggest signal
    gain, no new vendor.
-2. **Add Finnhub fundamentals and analyst recommendations** — closes the
-   largest capability gap with the key you already have.
+2. **Valuation multiples** — earnings surprise and revisions are in and
+   weighted; what is expensive versus cheap still is not.
 3. **Corporate actions** so the backtester stops reading splits as crashes.
 4. **FX rates** so multi-region portfolios can show one trustworthy total.
 5. **Exchange holiday calendars** so "market open" is true rather than
