@@ -208,3 +208,37 @@ async def test_the_ingest_says_so_when_no_symbol_has_a_cik(db):
 
     assert report.symbols == 0
     assert "CIK" in report.note
+
+
+@pytest.mark.asyncio
+async def test_a_refused_lookup_is_named_rather_than_read_as_no_filings(
+    db, seeded_stocks, monkeypatch
+):
+    """filings_seen: 0 means two opposite things, and the report must say which.
+
+    A company that filed nothing this week and a company whose filing list was
+    refused both produce zero. Reading the second as the first is how a broken
+    fetch looks like a quiet market.
+    """
+    import httpx
+
+    from app.integrations import insider
+
+    stock = seeded_stocks[0]
+    stock.cik = "0001682852"
+    await db.commit()
+
+    request = httpx.Request("GET", "https://data.sec.gov/submissions/x.json")
+    response = httpx.Response(403, request=request)
+
+    async def _refused(self, url, **kwargs):
+        raise httpx.HTTPStatusError("refused", request=request, response=response)
+
+    monkeypatch.setattr(httpx.AsyncClient, "get", _refused)
+    monkeypatch.setattr(insider, "REQUEST_DELAY_SECONDS", 0.0)
+
+    report = await insider.ingest_insider_transactions(db, [stock.ticker])
+
+    assert report.filings_seen == 0
+    assert report.lookup_failures == {"HTTP 403": 1}
+    assert report.as_dict()["lookup_failures"] == {"HTTP 403": 1}

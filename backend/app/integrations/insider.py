@@ -59,6 +59,10 @@ class InsiderReport:
     transactions_stored: int = 0
     skipped_not_open_market: int = 0
     note: str | None = None
+    # Why a company's filing list could not be read, by HTTP status or
+    # exception name. Without this, filings_seen: 0 reads as "nothing was
+    # filed" whether or not anything was actually asked.
+    lookup_failures: dict[str, int] = field(default_factory=dict)
     failed: list[str] = field(default_factory=list)
 
     def as_dict(self) -> dict:
@@ -69,6 +73,7 @@ class InsiderReport:
             "transactions_stored": self.transactions_stored,
             "skipped_not_open_market": self.skipped_not_open_market,
             "note": self.note,
+            "lookup_failures": self.lookup_failures,
             "failed": self.failed,
         }
 
@@ -196,17 +201,25 @@ def _parse_date(value: str | None) -> date | None:
 
 async def _recent_form4s(
     client: httpx.AsyncClient, cik: str, cutoff: date
-) -> list[tuple[str, str, date]]:
-    """(accession, document, filed_on) for a company's recent Form 4s."""
+) -> tuple[list[tuple[str, str, date]], str | None]:
+    """(accession, document, filed_on) for a company's recent Form 4s.
+
+    Returns the filings and, when the lookup failed, a name for why. An empty
+    list on its own cannot distinguish "this company filed nothing this week"
+    from "the request was refused", and those need opposite responses.
+    """
     try:
         response = await client.get(
             SUBMISSIONS_URL.format(cik=cik), headers=_headers(), timeout=30.0
         )
         response.raise_for_status()
         payload = response.json()
+    except httpx.HTTPStatusError as exc:
+        logger.warning("SEC submissions failed for CIK %s: %s", cik, exc)
+        return [], f"HTTP {exc.response.status_code}"
     except (httpx.HTTPError, ValueError) as exc:
         logger.warning("SEC submissions failed for CIK %s: %s", cik, exc)
-        return []
+        return [], type(exc).__name__
 
     recent = payload.get("filings", {}).get("recent", {})
     forms = recent.get("form", [])
@@ -225,7 +238,7 @@ async def _recent_form4s(
         document = documents[index] if index < len(documents) else ""
         if accession and document:
             found.append((accession.replace("-", ""), document, filed))
-    return found
+    return found, None
 
 
 async def ingest_insider_transactions(
@@ -262,8 +275,12 @@ async def ingest_insider_transactions(
     report.symbols = len(stocks)
     async with httpx.AsyncClient() as client:
         for stock in stocks:
-            filings = await _recent_form4s(client, stock.cik, cutoff)
+            filings, failure = await _recent_form4s(client, stock.cik, cutoff)
             await asyncio.sleep(REQUEST_DELAY_SECONDS)
+            if failure is not None:
+                report.lookup_failures[failure] = (
+                    report.lookup_failures.get(failure, 0) + 1
+                )
             report.filings_seen += len(filings)
 
             for accession, document, filed_on in filings:
