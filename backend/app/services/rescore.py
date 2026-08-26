@@ -321,6 +321,11 @@ class FilingTextReport:
     # source refusing us from a URL we built wrong, and those are repaired in
     # completely different files.
     failed_samples: list[dict] = field(default_factory=list)
+    # Filings that were fetched and parsed but blew up while being stored or
+    # rescored, by exception name. Distinct from `failures`, which is about
+    # not reaching the document at all.
+    errors: dict[str, int] = field(default_factory=dict)
+    error_samples: list[dict] = field(default_factory=list)
     stopped_early: str | None = None
     samples: list[dict] = field(default_factory=list)
 
@@ -336,6 +341,8 @@ class FilingTextReport:
             "unreachable": self.unreachable,
             "failures": self.failures,
             "failed_samples": self.failed_samples,
+            "errors": self.errors,
+            "error_samples": self.error_samples,
             "stopped_early": self.stopped_early,
             "samples": self.samples,
         }
@@ -467,7 +474,45 @@ async def backfill_filing_text(
                 report.no_narrative += 1
                 continue
 
-            article.body = f"{article.body or ''} {narrative}".strip()
+            # One unusual filing must not lose the whole run. Every other SEC
+            # path here treats a bad document as a soft failure; this one
+            # raised, and a single row turned a 150-filing pass into a 500 with
+            # nothing stored and nothing said about which row did it.
+            try:
+                article.body = f"{article.body or ''} {narrative}".strip()
+
+                score = (
+                    await db.execute(
+                        select(SentimentScore).where(
+                            SentimentScore.article_id == article.id
+                        )
+                    )
+                ).scalar_one_or_none()
+
+                if score is not None:
+                    result = analyzer.analyze_sentiment(
+                        article.headline, article.body, overlay_key(sector)
+                    )
+                    event = analyzer.classify_event_type(
+                        article.headline, article.body
+                    )
+                    score.sentiment = result.sentiment.value
+                    score.score = result.score
+                    score.confidence = result.confidence
+                    score.event_type = event.primary_event.value
+                    score.event_confidence = event.confidence
+                    score.model_version = analyzer.model_version
+                    report.rescored += 1
+            except Exception as exc:  # noqa: BLE001 - report it, don't lose the run
+                logger.exception("Backfill failed on %s (%s)", ticker, article.url)
+                key = type(exc).__name__
+                report.errors[key] = report.errors.get(key, 0) + 1
+                if len(report.error_samples) < MAX_FAILED_SAMPLES:
+                    report.error_samples.append(
+                        {"ticker": ticker, "url": article.url, "error": key}
+                    )
+                continue
+
             report.updated += 1
             if len(report.samples) < 10:
                 report.samples.append(
@@ -475,28 +520,6 @@ async def backfill_filing_text(
                      "headline": article.headline,
                      "narrative_chars": len(narrative)}
                 )
-
-            score = (
-                await db.execute(
-                    select(SentimentScore).where(
-                        SentimentScore.article_id == article.id
-                    )
-                )
-            ).scalar_one_or_none()
-            if score is None:
-                continue
-
-            result = analyzer.analyze_sentiment(
-                article.headline, article.body, overlay_key(sector)
-            )
-            event = analyzer.classify_event_type(article.headline, article.body)
-            score.sentiment = result.sentiment.value
-            score.score = result.score
-            score.confidence = result.confidence
-            score.event_type = event.primary_event.value
-            score.event_confidence = event.confidence
-            score.model_version = analyzer.model_version
-            report.rescored += 1
 
     await db.commit()
     logger.info("Filing text backfill: %s", report.as_dict())

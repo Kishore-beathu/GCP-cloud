@@ -540,3 +540,67 @@ async def test_a_sample_names_its_ticker_without_a_lazy_load(
     assert report.updated == 1
     assert report.samples, "a successful extraction should record a sample"
     assert report.samples[0]["ticker"] == ticker
+
+
+@pytest.mark.asyncio
+async def test_one_bad_filing_does_not_lose_the_run(db, seeded_stocks, monkeypatch):
+    """A run of 150 returned a 500 and stored nothing, naming no row.
+
+    Every other SEC path treats a bad document as a soft failure. This one
+    raised, so a single unusual filing discarded every good one alongside it
+    and left no way to tell which filing was responsible.
+    """
+    import httpx
+
+    from app.models import NewsArticle, SentimentScore
+    from app.services import rescore
+
+    stock = seeded_stocks[0]
+    for index in range(3):
+        article = NewsArticle(
+            ticker_id=stock.id,
+            headline="Co filed 8-K: Other Events",
+            body="Form 8-K filed 2026-08-20 (Current report).",
+            source="sec_edgar",
+            url=f"https://www.sec.gov/Archives/edgar/data/1/{index}/form8k.htm",
+            published_at=datetime.now(timezone.utc),
+        )
+        db.add(article)
+        await db.flush()
+        # The rescore branch is the one that raised, and it runs only for an
+        # article that already carries a score.
+        db.add(
+            SentimentScore(
+                article_id=article.id, sentiment="neutral", score=0.0,
+                confidence=0.25, event_type="other", event_confidence=0.0,
+                model_version="lexicon-v1",
+            )
+        )
+    await db.commit()
+    db.expunge_all()
+
+    monkeypatch.setattr(rescore, "SEC_REQUEST_DELAY_SECONDS", 0.0)
+    monkeypatch.setattr(
+        httpx.AsyncClient, "get", lambda self, url, **kwargs: _response(_filing())
+    )
+
+    calls = 0
+    real = rescore.overlay_key
+
+    def _explode_once(sector):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise ValueError("unexpected sector shape")
+        return real(sector)
+
+    monkeypatch.setattr(rescore, "overlay_key", _explode_once)
+
+    report = await rescore.backfill_filing_text(db)
+
+    # The two healthy filings still land, and the failure is named.
+    assert report.fetched == 3
+    assert report.updated == 2
+    assert report.errors == {"ValueError": 1}
+    assert report.error_samples[0]["error"] == "ValueError"
+    assert report.error_samples[0]["url"].startswith("https://www.sec.gov/")
