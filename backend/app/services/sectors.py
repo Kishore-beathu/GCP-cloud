@@ -80,15 +80,26 @@ GROUPS: tuple[SectorGroup, ...] = (
         label="Data Storage & Infrastructure",
         description=(
             "Where the data physically lives and how it is queried: drives and "
-            "memory, storage systems, data platforms, and the data centres "
-            "themselves."
+            "memory, the servers and storage systems built from them, data "
+            "platforms, the data centres themselves, and the power and cooling "
+            "that limit how many of them get built."
         ),
         sectors=(
             "storage_hardware",
+            # The machines the racks are filled with. Mostly Taiwanese ODMs,
+            # who build for the hyperscalers rather than selling a brand, and
+            # therefore trade on order flow rather than on end demand.
+            "server_hardware",
             "memory",
             "cloud_storage",
             "data_platform",
             "data_center",
+            # Power and cooling. Separate from data_center because a REIT
+            # leasing floor space and a company selling switchgear respond to
+            # the same demand through completely different mechanics — and
+            # because power availability, not floor space, is the binding
+            # constraint on the build-out.
+            "datacenter_power",
         ),
     ),
 )

@@ -357,3 +357,40 @@ def test_a_company_with_an_approved_product_is_not_clinical_stage():
     }
 
     assert not (cohort & now_commercial)
+
+
+# --- Cohort size --------------------------------------------------------------
+
+
+def test_no_ranking_cohort_is_too_small_to_percentile():
+    """A percentile over 32 names moves in steps of three points.
+
+    Ranking is cross-sectional, so a rank is only as informative as the cohort
+    it is measured against. Data Storage was the smallest group by some way,
+    which meant the same score carried far less information there than in
+    Pharma & Life Sciences.
+    """
+    counts: dict[str, int] = {}
+    for seed in SEED_TICKERS:
+        key = sectors.group_for(seed.sector)
+        counts[key] = counts.get(key, 0) + 1
+
+    for group, size in counts.items():
+        assert size >= 50, f"{group} has only {size} symbols to rank against"
+
+
+def test_the_data_centre_build_out_is_split_from_the_buildings():
+    """Two different trades on the same demand.
+
+    A REIT leasing floor space and a company selling switchgear both rise on
+    data-centre construction and respond to it through completely different
+    mechanics. Ranked together, the momentum of one would be read as evidence
+    about the other.
+    """
+    buildings = {s.ticker for s in SEED_TICKERS if s.sector == "data_center"}
+    power = {s.ticker for s in SEED_TICKERS if s.sector == "datacenter_power"}
+
+    assert buildings and power
+    assert not (buildings & power)
+    assert sectors.group_for("datacenter_power") == "data_storage"
+    assert sectors.group_for("server_hardware") == "data_storage"

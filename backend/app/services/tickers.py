@@ -267,6 +267,79 @@ SEED_TICKERS: tuple[TickerSeed, ...] = (
     # line, which is where its international news flow tends to land first.
     TickerSeed("2359.HK", "WuXi AppTec Co.", "cro"),
     TickerSeed("SYNGENE.NS", "Syngene International Ltd.", "cro"),
+    # --- Data storage, widened -----------------------------------------------
+    # The smallest ranking cohort at 32 names, which made its percentiles move
+    # in steps of three points: a rank there carried a fraction of the
+    # information the same rank carried in a 145-name group. Cross-sectional
+    # ranking is only as good as the cohort it ranks against, so this is the
+    # cheapest available improvement to score quality — no new code, no new
+    # vendor, just more of what the percentile is computed over.
+    #
+    # Paced against the vendor rate limit rather than added to exhaustion:
+    # roughly 60 calls a minute sets how fast the whole universe refreshes, and
+    # a universe that cannot be refreshed inside an ingest cycle is worse than
+    # a smaller one that can.
+    #
+    # Servers: the machines the racks are filled with. Almost all Taiwanese
+    # ODMs, who build to hyperscaler order rather than selling a brand, so they
+    # move on order flow ahead of the end demand that drives everyone else here.
+    TickerSeed("2317.TW", "Hon Hai Precision Industry", "server_hardware"),
+    TickerSeed("2382.TW", "Quanta Computer Inc.", "server_hardware"),
+    TickerSeed("3231.TW", "Wistron Corporation", "server_hardware"),
+    TickerSeed("6669.TW", "Wiwynn Corporation", "server_hardware"),
+    TickerSeed("2356.TW", "Inventec Corporation", "server_hardware"),
+    TickerSeed("000977.SZ", "Inspur Electronic Information", "server_hardware"),
+    # Memory, deepened. The cohort had the three big DRAM makers and little of
+    # the NAND and controller layer that moves with them.
+    TickerSeed("2344.TW", "Winbond Electronics Corp.", "memory"),
+    TickerSeed("2337.TW", "Macronix International", "memory"),
+    TickerSeed("8299.TW", "Phison Electronics Corp.", "memory"),
+    TickerSeed("SIMO", "Silicon Motion Technology (ADR)", "memory", "NASDAQ"),
+    TickerSeed("RMBS", "Rambus Inc.", "memory", "NASDAQ"),
+    TickerSeed("NLST", "Netlist Inc.", "memory", "NASDAQ"),
+    TickerSeed("MRAM", "Everspin Technologies", "memory", "NASDAQ"),
+    # Data platforms and the software that protects what is on them.
+    TickerSeed("DT", "Dynatrace Inc.", "data_platform", "NYSE"),
+    TickerSeed("PRGS", "Progress Software Corporation", "data_platform", "NASDAQ"),
+    TickerSeed("CVLT", "Commvault Systems Inc.", "data_platform", "NASDAQ"),
+    TickerSeed("RBRK", "Rubrik Inc.", "data_platform", "NYSE"),
+    TickerSeed("VRNS", "Varonis Systems Inc.", "data_platform", "NASDAQ"),
+    TickerSeed("DOMO", "Domo Inc.", "data_platform", "NASDAQ"),
+    # Storage sold as a service.
+    TickerSeed("BLZE", "Backblaze Inc.", "cloud_storage", "NASDAQ"),
+    TickerSeed("FSLY", "Fastly Inc.", "cloud_storage", "NYSE"),
+    TickerSeed("DOCN", "DigitalOcean Holdings", "cloud_storage", "NYSE"),
+    # More buildings, including the operators that pivoted from mining to AI
+    # compute — they own the two things that are actually scarce, interconnect
+    # and a grid connection.
+    TickerSeed("CRWV", "CoreWeave Inc.", "data_center", "NASDAQ"),
+    TickerSeed("NBIS", "Nebius Group N.V.", "data_center", "NASDAQ"),
+    TickerSeed("CIFR", "Cipher Mining Inc.", "data_center", "NASDAQ"),
+    TickerSeed("WULF", "TeraWulf Inc.", "data_center", "NASDAQ"),
+    TickerSeed("HUT", "Hut 8 Corp.", "data_center", "NASDAQ"),
+    TickerSeed("GLXY", "Galaxy Digital Inc.", "data_center", "NASDAQ"),
+    TickerSeed("VNET", "VNET Group Inc. (ADR)", "data_center", "NASDAQ"),
+    TickerSeed("NXT.AX", "NEXTDC Limited", "data_center"),
+    # Power and cooling. Not a data-centre cohort in disguise: a REIT leasing
+    # floor space and a company selling switchgear answer the same demand
+    # through different mechanics, and it is power availability rather than
+    # floor space that decides how many of these get built at all.
+    TickerSeed("ETN", "Eaton Corporation plc", "datacenter_power", "NYSE"),
+    TickerSeed("NVT", "nVent Electric plc", "datacenter_power", "NYSE"),
+    TickerSeed("MOD", "Modine Manufacturing Company", "datacenter_power", "NYSE"),
+    TickerSeed("GNRC", "Generac Holdings Inc.", "datacenter_power", "NYSE"),
+    TickerSeed("BE", "Bloom Energy Corporation", "datacenter_power", "NYSE"),
+    TickerSeed("GEV", "GE Vernova Inc.", "datacenter_power", "NYSE"),
+    TickerSeed("PWR", "Quanta Services Inc.", "datacenter_power", "NYSE"),
+    TickerSeed("FIX", "Comfort Systems USA", "datacenter_power", "NYSE"),
+    TickerSeed("EME", "EMCOR Group Inc.", "datacenter_power", "NYSE"),
+    TickerSeed("VST", "Vistra Corp.", "datacenter_power", "NYSE"),
+    TickerSeed("CEG", "Constellation Energy Corporation", "datacenter_power", "NASDAQ"),
+    TickerSeed("TLN", "Talen Energy Corporation", "datacenter_power", "NASDAQ"),
+    TickerSeed("NRG", "NRG Energy Inc.", "datacenter_power", "NYSE"),
+    TickerSeed("SU.PA", "Schneider Electric SE", "datacenter_power"),
+    TickerSeed("LR.PA", "Legrand SA", "datacenter_power"),
+    TickerSeed("ABBN.SW", "ABB Ltd", "datacenter_power"),
     # --- North America beyond the US ---------------------------------------
     TickerSeed("BHC.TO", "Bausch Health Companies", "pharma"),
     # CXR.TO was Concordia International, long delisted. Cardiol is CRDL.

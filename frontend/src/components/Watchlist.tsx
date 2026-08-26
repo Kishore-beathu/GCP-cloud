@@ -47,10 +47,12 @@ const SECTOR_LABELS: Record<string, string> = {
   ai_software: 'AI software',
   ai_health: 'AI drug discovery',
   storage_hardware: 'Storage hardware',
+  server_hardware: 'Servers & ODMs',
   memory: 'Memory',
   cloud_storage: 'Cloud storage',
   data_platform: 'Data platforms',
   data_center: 'Data centres',
+  datacenter_power: 'Data centre power & cooling',
 }
 
 interface Props {
