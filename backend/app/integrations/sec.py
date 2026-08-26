@@ -96,17 +96,25 @@ def describe_items(item_codes: str) -> list[str]:
 
 
 def _headers() -> dict[str, str]:
+    """Headers for any SEC request, on either host.
+
+    Host is deliberately absent. httpx derives it from the URL, and pinning it
+    here sent ``Host: data.sec.gov`` with requests to www.sec.gov/Archives —
+    which the SEC routes by Host, so every filing document came back 404 while
+    the submissions feed on data.sec.gov worked perfectly. That silently broke
+    all three Archives callers: filing text at ingest, the filing-text
+    backfill, and Form 4 insider parsing. Only the ticker map noticed, and it
+    worked around it locally instead of fixing it here.
+    """
     return {
         "User-Agent": get_settings().sec_user_agent,
         "Accept-Encoding": "gzip, deflate",
-        "Host": "data.sec.gov",
     }
 
 
 async def fetch_ticker_cik_map(client: httpx.AsyncClient) -> dict[str, str]:
     """Return ``{TICKER: zero-padded CIK}`` for every SEC registrant."""
-    headers = _headers() | {"Host": "www.sec.gov"}
-    response = await client.get(TICKER_MAP_URL, headers=headers, timeout=30.0)
+    response = await client.get(TICKER_MAP_URL, headers=_headers(), timeout=30.0)
     response.raise_for_status()
 
     mapping: dict[str, str] = {}

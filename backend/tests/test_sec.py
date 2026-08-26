@@ -143,3 +143,66 @@ async def test_user_agent_header_is_sent():
     # The SEC blocks requests without a descriptive, contactable User-Agent.
     assert seen["user-agent"]
     assert "python-httpx" not in seen["user-agent"]
+
+
+async def test_the_host_header_matches_the_url_on_every_sec_host():
+    """A pinned Host header routes the request to the wrong SEC service.
+
+    The SEC serves the submissions feed from data.sec.gov and filing documents
+    from www.sec.gov, and routes by Host. ``_headers`` pinned Host to
+    data.sec.gov, so every request for a filing document was answered by the
+    wrong service with a 404 — while the submissions feed, on the host that
+    happened to be pinned, worked perfectly. That combination made the fault
+    invisible: the ingest reported filings, and only their documents vanished.
+    """
+    seen: list[tuple[str, str]] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        seen.append((request.url.host, request.headers.get("host", "")))
+        if "submissions" in str(request.url):
+            return httpx.Response(200, json=SUBMISSIONS_PAYLOAD)
+        return httpx.Response(200, json=TICKER_MAP_PAYLOAD)
+
+    async with _client(handler) as client:
+        await fetch_ticker_cik_map(client)
+        await fetch_sec_filings(client, "MRNA", "0001682852", read_text=False)
+
+    assert seen, "no requests were made"
+    # Both hosts are exercised: www.sec.gov for the ticker map, data.sec.gov
+    # for submissions. A single pinned value cannot be right for both.
+    assert {host for host, _ in seen} == {"www.sec.gov", "data.sec.gov"}
+    for url_host, header_host in seen:
+        assert header_host == url_host, f"Host {header_host!r} for {url_host!r}"
+
+
+async def test_filing_documents_are_fetched_from_the_archives_host():
+    """The document fetch is the call the pinned Host broke."""
+    seen: list[tuple[str, str]] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        seen.append((str(request.url), request.headers.get("host", "")))
+        if "submissions" in str(request.url):
+            return httpx.Response(200, json=SUBMISSIONS_PAYLOAD)
+        return httpx.Response(
+            200,
+            text=(
+                "<html><body><p>Item 8.01 Other Events.</p><p>On August 1, "
+                "2025, the Company announced that its trial met its primary "
+                "endpoint.</p></body></html>"
+            ),
+            headers={"content-type": "text/html"},
+        )
+
+    async with _client(handler) as client:
+        articles = await fetch_sec_filings(client, "MRNA", "0001682852", read_text=True)
+
+    archives = [(url, host) for url, host in seen if "/Archives/" in url]
+    assert archives, f"no document was fetched; requests were {seen}"
+    url, host = archives[0]
+    assert url.startswith("https://www.sec.gov/Archives/edgar/data/1682852/")
+    # The assertion that matters. httpx honours an explicit Host header, so a
+    # pinned "data.sec.gov" really was sent with this www.sec.gov request, and
+    # the SEC answered it from the wrong service with a 404.
+    assert host == "www.sec.gov", f"document requested with Host {host!r}"
+    # The narrative, not just the item code, reaches the article body.
+    assert "primary endpoint" in articles[0].body
