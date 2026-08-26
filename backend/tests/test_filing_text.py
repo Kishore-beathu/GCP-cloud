@@ -495,3 +495,48 @@ async def test_an_intermittent_failure_does_not_stop_the_run(
     assert report.stopped_early is None
     assert report.unreachable == 6
     assert report.fetched == 6
+
+
+@pytest.mark.asyncio
+async def test_a_sample_names_its_ticker_without_a_lazy_load(
+    db, seeded_stocks, monkeypatch
+):
+    """The sample line must not reach through a lazy relationship.
+
+    ``NewsArticle.stock`` is lazily loaded, and touching it inside an async
+    session raises MissingGreenlet. The line that did so runs only on a
+    successful extraction, so while every fetch was 404ing it never executed —
+    and the existing test passed because its Stock was already warm in the
+    session's identity map. Expunging first is what makes this a real test:
+    it reproduces a cold session, which is what the endpoint actually has.
+    """
+    import httpx
+
+    from app.models import NewsArticle
+    from app.services import rescore
+
+    stock = seeded_stocks[0]
+    ticker = stock.ticker
+    db.add(
+        NewsArticle(
+            ticker_id=stock.id,
+            headline="Co filed 8-K: Other Events",
+            body="Form 8-K filed 2026-08-20 (Current report).",
+            source="sec_edgar",
+            url="https://www.sec.gov/Archives/edgar/data/1/2/form8k.htm",
+            published_at=datetime.now(timezone.utc),
+        )
+    )
+    await db.commit()
+    db.expunge_all()
+
+    monkeypatch.setattr(rescore, "SEC_REQUEST_DELAY_SECONDS", 0.0)
+    monkeypatch.setattr(
+        httpx.AsyncClient, "get", lambda self, url, **kwargs: _response(_filing())
+    )
+
+    report = await rescore.backfill_filing_text(db)
+
+    assert report.updated == 1
+    assert report.samples, "a successful extraction should record a sample"
+    assert report.samples[0]["ticker"] == ticker

@@ -391,7 +391,12 @@ async def backfill_filing_text(
 
     rows = (
         await db.execute(
-            select(NewsArticle, Stock.sector)
+            # Stock.ticker is selected rather than reached through
+            # article.stock. That relationship is lazy, and touching it inside
+            # an async session raises MissingGreenlet — which only surfaced
+            # once documents actually started being fetched, because the line
+            # that used it runs solely on a successful extraction.
+            select(NewsArticle, Stock.sector, Stock.ticker)
             .join(Stock, Stock.id == NewsArticle.ticker_id)
             .where(
                 NewsArticle.source == SEC_SOURCE,
@@ -404,8 +409,8 @@ async def backfill_filing_text(
     ).all()
 
     candidates = [
-        (article, sector)
-        for article, sector in rows
+        (article, sector, ticker)
+        for article, sector, ticker in rows
         if len(article.body or "") <= METADATA_BODY_CHARS
     ]
     report.examined = len(candidates)
@@ -417,7 +422,7 @@ async def backfill_filing_text(
     # redirects arrive as 301s, raise_for_status turns them into failures, and
     # a document that is perfectly reachable is recorded as unreachable.
     async with httpx.AsyncClient(follow_redirects=True) as client:
-        for index, (article, sector) in enumerate(candidates):
+        for index, (article, sector, ticker) in enumerate(candidates):
             if index:
                 await asyncio.sleep(SEC_REQUEST_DELAY_SECONDS)
             # Name the failure rather than only counting it. A status code
@@ -466,7 +471,7 @@ async def backfill_filing_text(
             report.updated += 1
             if len(report.samples) < 10:
                 report.samples.append(
-                    {"ticker": article.stock.ticker if article.stock else None,
+                    {"ticker": ticker,
                      "headline": article.headline,
                      "narrative_chars": len(narrative)}
                 )
