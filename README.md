@@ -31,6 +31,10 @@ universe and starts the scheduler, so "the process is running" and "the API is
 serving" are several seconds apart, and that gap is what a frontend stuck on
 "Connecting…" is usually showing.
 
+`.\scripts\stop.cmd` stops both. `start.cmd` runs it first, so a launch that
+failed partway cannot leave a server behind holding a port — matched on the
+repository path, so unrelated Python and Node work is untouched.
+
 To run the two halves by hand instead, see [`backend/README.md`](backend/README.md)
 and [`frontend/README.md`](frontend/README.md).
 

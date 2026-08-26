@@ -41,6 +41,14 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
+
+# Clear this project's leftovers before starting. Without it, a run that failed
+# partway leaves a uvicorn holding a port and a Vite still serving a page
+# pointed at a backend that no longer exists — and the next launch picks new
+# ports for both, so the browser tab you already have open keeps talking to the
+# dead one. That reads as a broken build rather than as the wrong server
+# answering, which is exactly the confusion this is meant to prevent.
+& (Join-Path $PSScriptRoot 'stop.ps1') | Out-Null
 $backend = Join-Path $root 'backend'
 $frontend = Join-Path $root 'frontend'
 $python = Join-Path $backend '.venv\Scripts\python.exe'
