@@ -191,3 +191,79 @@ async def repair_article_links(
         logger.info("Deleted %d articles with unusable links", report.deleted)
 
     return report
+
+
+@dataclass
+class AttributionReport:
+    """What an attribution audit found in the stored Yahoo news."""
+
+    examined: int = 0
+    misattributed: int = 0
+    deleted: int = 0
+    by_ticker: dict[str, int] = field(default_factory=dict)
+    samples: list[dict] = field(default_factory=list)
+
+    def as_dict(self) -> dict:
+        return {
+            "examined": self.examined,
+            "misattributed": self.misattributed,
+            "deleted": self.deleted,
+            "by_ticker": self.by_ticker,
+            "samples": self.samples,
+        }
+
+
+async def audit_attribution(
+    db: AsyncSession, apply: bool = False, limit: int = 20
+) -> AttributionReport:
+    """Find stored Yahoo articles that never name the symbol they are filed under.
+
+    Yahoo's per-symbol feed answers with what it thinks a holder of that symbol
+    might want to read, not only with news about it, and the ingest trusted the
+    request URL as attribution. So rows exist filed under one company and
+    describing another — "Bull of the Day: Carter's (CRI)" scored +1.00 and
+    stored against Amazon.
+
+    Unlike the unusable-link repair, deleting here is the right call rather
+    than a last resort. That one destroyed a usable sentiment score to fix a
+    broken hyperlink; this one removes a score that is *wrong* — attributed to
+    a company the article is not about, feeding a pillar of the ranked score
+    and able to put a symbol on the shortlist on another company's good news.
+    A missing article costs a little coverage. A misattributed one costs
+    correctness, and does it invisibly.
+
+    Still a dry run by default: it reports the scale and names examples first.
+    """
+    from app.services.matching import build_index
+    from app.integrations.yahoo_news import SOURCE, _is_about
+
+    report = AttributionReport()
+    index = await build_index(db)
+
+    rows = (
+        await db.execute(
+            select(NewsArticle.id, NewsArticle.headline, NewsArticle.body, Stock.ticker)
+            .join(Stock, Stock.id == NewsArticle.ticker_id)
+            .where(NewsArticle.source == SOURCE)
+        )
+    ).all()
+    report.examined = len(rows)
+
+    wrong: list[int] = []
+    for article_id, headline, body, ticker in rows:
+        if _is_about(ticker, headline, body, index):
+            continue
+        wrong.append(article_id)
+        report.by_ticker[ticker] = report.by_ticker.get(ticker, 0) + 1
+        if len(report.samples) < limit:
+            report.samples.append({"ticker": ticker, "headline": headline})
+
+    report.misattributed = len(wrong)
+
+    if apply and wrong:
+        await db.execute(delete(NewsArticle).where(NewsArticle.id.in_(wrong)))
+        await db.commit()
+        report.deleted = len(wrong)
+        logger.info("Deleted %d misattributed articles", report.deleted)
+
+    return report

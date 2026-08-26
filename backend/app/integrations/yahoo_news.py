@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from datetime import datetime, timedelta, timezone
 
 import httpx
@@ -27,6 +28,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import get_settings
 from app.models import Stock
 from app.services.feeds import fetch_feed, strip_html
+from app.services.matching import CompanyIndex, build_index, match_tickers
 from app.services.ingest import IngestReport, RawArticle, store_articles
 
 logger = logging.getLogger(__name__)
@@ -37,9 +39,29 @@ REQUEST_DELAY_SECONDS = 0.4
 
 
 async def fetch_ticker_news(
-    client: httpx.AsyncClient, ticker: str, cutoff: datetime
+    client: httpx.AsyncClient,
+    ticker: str,
+    cutoff: datetime,
+    index: CompanyIndex | None = None,
 ) -> list[RawArticle]:
-    """Headlines for one symbol, newer than the cutoff."""
+    """Headlines for one symbol, newer than the cutoff and actually about it.
+
+    Requesting the feed per symbol looks like it makes attribution exact. It
+    does not. Yahoo answers ``?s=AMZN`` with the market commentary it thinks an
+    Amazon holder might read, so the symbol's feed carried "Polestar Announces
+    Change to Board of Directors", "Billionaire David Tepper Sold Every Single
+    Share of UnitedHealth" and "Bull of the Day: Carter's (CRI)" — the last of
+    which scored +1.00 and was stored as positive news for Amazon.
+
+    That is worse than noise in the feed. Sentiment is a pillar of the ranked
+    score, so another company's good news lifted this one's ranking, and the
+    same article would put it on the shortlist as a symbol with a catalyst.
+
+    So each entry has to mention the company it was fetched for. The matcher
+    already indexes every listing by name and symbol for the newswire sources,
+    which is the same problem — a shared feed naming many companies — arrived
+    at from the other direction.
+    """
     entries = await fetch_feed(
         client,
         FEED_URL,
@@ -50,19 +72,44 @@ async def fetch_ticker_news(
     for entry in entries:
         if entry.published_at < cutoff:
             continue
+        body = strip_html(entry.summary)
+        if index is not None and not _is_about(ticker, entry.title, body, index):
+            logger.debug("Yahoo %s feed carried an unrelated story: %s", ticker, entry.title)
+            continue
         articles.append(
             RawArticle(
-                # The feed was requested per symbol, so attribution is exact —
-                # no company-name matching, and no false positives from it.
                 ticker=ticker,
                 headline=entry.title,
-                body=strip_html(entry.summary),
+                body=body,
                 url=entry.link,
                 source=SOURCE,
                 published_at=entry.published_at,
             )
         )
     return articles
+
+
+def _is_about(ticker: str, headline: str, body: str | None, index: CompanyIndex) -> bool:
+    """Does this story actually name the company whose feed it came from?
+
+    Deliberately generous: the headline *or* the body counts, and matching is
+    on the company index rather than a substring, so "Takeda Pharmaceutical
+    Co." is found from a headline that only says "Takeda". The cost of being
+    strict is a real story dropped; the cost of being loose is another
+    company's news scored against this symbol, and only one of those two
+    quietly changes a ranking.
+    """
+    symbol = ticker.upper()
+    text = f"{headline} {body or ''}"
+    if symbol in match_tickers(text, index, limit=10):
+        return True
+    # A headline can quote the bare symbol without the suffix the feed uses:
+    # "AZN posts trial win" for AZN.L. The root is enough on its own only when
+    # it is not a short, common word.
+    root = symbol.partition(".")[0]
+    if len(root) >= 3 and re.search(rf"\b{re.escape(root)}\b", text, re.IGNORECASE):
+        return True
+    return False
 
 
 async def ingest_yahoo_news(
@@ -87,11 +134,17 @@ async def ingest_yahoo_news(
         days=lookback_days or settings.yahoo_news_lookback_days
     )
 
+    # Built once for the whole run: it is a scan of the universe, and doing it
+    # per symbol would cost one query per request.
+    company_index = await build_index(db)
+
     collected: list[RawArticle] = []
     async with httpx.AsyncClient() as client:
-        for index, symbol in enumerate(symbols):
-            collected.extend(await fetch_ticker_news(client, symbol, cutoff))
-            if index < len(symbols) - 1:
+        for position, symbol in enumerate(symbols):
+            collected.extend(
+                await fetch_ticker_news(client, symbol, cutoff, company_index)
+            )
+            if position < len(symbols) - 1:
                 await asyncio.sleep(REQUEST_DELAY_SECONDS)
 
     if not collected:

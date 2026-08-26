@@ -197,14 +197,13 @@ async def test_openfda_404_is_an_empty_result_not_an_error(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_yahoo_news_attributes_by_the_requested_symbol(db, seeded_stocks, monkeypatch):
-    """The feed is fetched per symbol, so there is no name matching to get wrong."""
+async def test_yahoo_news_keeps_stories_that_name_the_company(db, seeded_stocks, monkeypatch):
     from app.integrations.yahoo_news import ingest_yahoo_news
 
     now = datetime.now(timezone.utc)
     rss = f"""<rss version="2.0"><channel>
       <item>
-        <title>An article that never names the company</title>
+        <title>Moderna reports positive Phase 3 data</title>
         <link>https://finance.example.com/1</link>
         <pubDate>{rfc822(now)}</pubDate>
       </item>
@@ -217,6 +216,95 @@ async def test_yahoo_news_attributes_by_the_requested_symbol(db, seeded_stocks, 
     assert report.added == 1
     article = (await db.execute(select(NewsArticle))).scalar_one()
     assert article.source == "yahoo_news"
+
+
+@pytest.mark.asyncio
+async def test_yahoo_news_drops_the_market_commentary_in_a_symbols_feed(
+    db, seeded_stocks, monkeypatch
+):
+    """Requesting per symbol does not mean the feed is about that symbol.
+
+    Yahoo answers ?s=AMZN with what it thinks an Amazon holder might want to
+    read, so the feed carried "Bull of the Day: Carter's (CRI)" — which scored
+    +1.00 and was stored as positive news for Amazon. Sentiment is a pillar of
+    the ranked score, so one company's good news was lifting another's rank,
+    and the same row would put it on the shortlist as a symbol with a catalyst.
+
+    This test previously asserted the opposite, pinning the bug in place: it
+    fed in "An article that never names the company" and required it to be
+    stored, on the reasoning that a per-symbol request needs no matching.
+    """
+    from app.integrations.yahoo_news import ingest_yahoo_news
+
+    now = datetime.now(timezone.utc)
+    rss = f"""<rss version="2.0"><channel>
+      <item>
+        <title>Bull of the Day: Carter's (CRI)</title>
+        <link>https://finance.example.com/2</link>
+        <pubDate>{rfc822(now)}</pubDate>
+      </item>
+      <item>
+        <title>Billionaire David Tepper Sold Every Share of UnitedHealth</title>
+        <link>https://finance.example.com/3</link>
+        <pubDate>{rfc822(now)}</pubDate>
+      </item>
+    </channel></rss>"""
+    mock_http(monkeypatch, lambda request: httpx.Response(200, text=rss))
+    monkeypatch.setattr("app.integrations.yahoo_news.REQUEST_DELAY_SECONDS", 0)
+
+    report = await ingest_yahoo_news(db, ["MRNA"])
+
+    assert report.added == 0
+
+
+@pytest.mark.asyncio
+async def test_yahoo_news_matches_a_company_named_without_its_full_legal_name(
+    db, seeded_stocks, monkeypatch
+):
+    """Headlines say "Pfizer", never "Pfizer Inc.".
+
+    Filtering on the stored company name as a substring would drop nearly every
+    genuine story, trading one silent corruption for another.
+    """
+    from app.integrations.yahoo_news import ingest_yahoo_news
+
+    now = datetime.now(timezone.utc)
+    rss = f"""<rss version="2.0"><channel>
+      <item>
+        <title>Pfizer wins FDA approval for expanded label</title>
+        <link>https://finance.example.com/4</link>
+        <pubDate>{rfc822(now)}</pubDate>
+      </item>
+    </channel></rss>"""
+    mock_http(monkeypatch, lambda request: httpx.Response(200, text=rss))
+    monkeypatch.setattr("app.integrations.yahoo_news.REQUEST_DELAY_SECONDS", 0)
+
+    report = await ingest_yahoo_news(db, ["PFE"])
+
+    assert report.added == 1
+
+
+@pytest.mark.asyncio
+async def test_yahoo_news_matches_a_bare_symbol_in_the_headline(
+    db, seeded_stocks, monkeypatch
+):
+    """A headline can quote the ticker instead of the name."""
+    from app.integrations.yahoo_news import ingest_yahoo_news
+
+    now = datetime.now(timezone.utc)
+    rss = f"""<rss version="2.0"><channel>
+      <item>
+        <title>MRNA jumps on trial readout</title>
+        <link>https://finance.example.com/5</link>
+        <pubDate>{rfc822(now)}</pubDate>
+      </item>
+    </channel></rss>"""
+    mock_http(monkeypatch, lambda request: httpx.Response(200, text=rss))
+    monkeypatch.setattr("app.integrations.yahoo_news.REQUEST_DELAY_SECONDS", 0)
+
+    report = await ingest_yahoo_news(db, ["MRNA"])
+
+    assert report.added == 1
 
 
 @pytest.mark.asyncio

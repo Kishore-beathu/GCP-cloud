@@ -24,7 +24,12 @@ from app.integrations.yahoo_news import ingest_yahoo_news
 from app.integrations.yahoo import count_unpriced, update_yahoo_prices
 from app.schemas import HealthResponse
 from app.security import require_auth
-from app.services.rescore import repair_article_links, rescore_articles, stale_count
+from app.services.rescore import (
+    audit_attribution,
+    repair_article_links,
+    rescore_articles,
+    stale_count,
+)
 from app.services.tickers import seed_stocks, tickers_in_group
 
 logger = logging.getLogger(__name__)
@@ -376,6 +381,33 @@ async def repair_links(
     feed will not serve again.
     """
     report = await repair_article_links(db, apply=apply)
+    return report.as_dict()
+
+
+@router.post(
+    "/admin/news/audit-attribution",
+    summary="Find (and optionally drop) news filed under the wrong company",
+    dependencies=[Depends(require_auth)],
+)
+async def audit_news_attribution(
+    apply: bool = Query(
+        default=False,
+        description="False reports what would be deleted; True deletes it",
+    ),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Count stored Yahoo articles that never name the symbol they are under.
+
+    The per-symbol feed carries general market commentary, and the ingest used
+    to treat the request URL as proof of attribution. Rows written before that
+    was fixed are still scored, and sentiment is a pillar of the ranked score —
+    so another company's good news is currently lifting some symbol's rank.
+
+    Deleting is the right fix here rather than a last resort: this removes a
+    score that is wrong about which company it describes, not merely one whose
+    hyperlink is broken. Dry run by default all the same.
+    """
+    report = await audit_attribution(db, apply=apply)
     return report.as_dict()
 
 

@@ -200,3 +200,96 @@ async def test_a_syndicated_copy_is_released_when_its_primary_is_deleted(db, see
     await db.refresh(copy)
 
     assert copy.duplicate_of_id is None
+
+
+# --- Attribution audit -------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_the_audit_finds_news_filed_under_the_wrong_company(db, seeded_stocks):
+    """Rows written before the per-symbol feed was filtered are still scored."""
+    from app.services.rescore import audit_attribution
+
+    stock = seeded_stocks[0]  # MRNA / Moderna
+    db.add_all(
+        [
+            NewsArticle(
+                ticker_id=stock.id,
+                headline="Bull of the Day: Carter's (CRI)",
+                url="https://example.com/wrong",
+                source="yahoo_news",
+                published_at=datetime.now(timezone.utc),
+            ),
+            NewsArticle(
+                ticker_id=stock.id,
+                headline="Moderna reports positive Phase 3 data",
+                url="https://example.com/right",
+                source="yahoo_news",
+                published_at=datetime.now(timezone.utc),
+            ),
+        ]
+    )
+    await db.commit()
+
+    report = await audit_attribution(db)
+
+    assert report.examined == 2
+    assert report.misattributed == 1
+    assert report.deleted == 0  # dry run by default
+    assert report.by_ticker == {"MRNA": 1}
+    assert report.samples[0]["headline"].startswith("Bull of the Day")
+
+
+@pytest.mark.asyncio
+async def test_applying_the_audit_removes_only_the_wrong_rows(db, seeded_stocks):
+    from app.services.rescore import audit_attribution
+
+    stock = seeded_stocks[0]
+    db.add_all(
+        [
+            NewsArticle(
+                ticker_id=stock.id,
+                headline="An unrelated market roundup",
+                url="https://example.com/wrong",
+                source="yahoo_news",
+                published_at=datetime.now(timezone.utc),
+            ),
+            NewsArticle(
+                ticker_id=stock.id,
+                headline="Moderna wins approval",
+                url="https://example.com/right",
+                source="yahoo_news",
+                published_at=datetime.now(timezone.utc),
+            ),
+        ]
+    )
+    await db.commit()
+
+    report = await audit_attribution(db, apply=True)
+
+    assert report.deleted == 1
+    remaining = (await db.execute(select(NewsArticle.headline))).scalars().all()
+    assert remaining == ["Moderna wins approval"]
+
+
+@pytest.mark.asyncio
+async def test_the_audit_leaves_other_sources_alone(db, seeded_stocks):
+    """SEC filings and newswire rows are matched at ingest by a different path."""
+    from app.services.rescore import audit_attribution
+
+    stock = seeded_stocks[0]
+    db.add(
+        NewsArticle(
+            ticker_id=stock.id,
+            headline="8-K filed",
+            url="https://sec.example.com/1",
+            source="sec_edgar",
+            published_at=datetime.now(timezone.utc),
+        )
+    )
+    await db.commit()
+
+    report = await audit_attribution(db)
+
+    assert report.examined == 0
+    assert report.misattributed == 0
