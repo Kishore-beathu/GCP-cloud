@@ -305,3 +305,61 @@ async def test_a_rejected_key_is_named_as_a_key_problem(db, seeded_stocks, monke
 
     assert "FINNHUB_API_KEY" in report.note
     assert report.profiles_updated == 0
+
+
+# --- Filtering ----------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_fundamentals_can_be_filtered_to_one_sector(client, db):
+    """The filter I documented before it existed.
+
+    ``?sector=clinical_stage`` was passed to this endpoint and silently
+    ignored — FastAPI drops unknown query parameters — so a request meant to
+    check 50 pre-revenue names against a $50M floor returned the whole
+    universe instead, led by Intel, Microsoft and Amazon. A dropped filter is
+    worse than a rejected one: the response looks like an answer.
+    """
+    db.add_all(
+        [
+            Stock(ticker="VKTX", company_name="Viking", sector="clinical_stage"),
+            Stock(ticker="PFE", company_name="Pfizer Inc.", sector="pharma"),
+        ]
+    )
+    await db.commit()
+
+    body = (await client.get("/fundamentals?sector=clinical_stage")).json()
+
+    assert [row["ticker"] for row in body["rows"]] == ["VKTX"]
+    assert body["rows"][0]["sector"] == "clinical_stage"
+
+
+@pytest.mark.asyncio
+async def test_an_unknown_sector_is_rejected_rather_than_ignored(client, db):
+    assert (await client.get("/fundamentals?sector=nonsense")).status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_every_row_says_which_currency_its_market_cap_is_in(client, db):
+    """A cap threshold across currencies compares unlike quantities.
+
+    Finnhub reports in the listing's own currency and nothing converts it, so
+    TSMC's cap arrives in TWD and Takeda's in JPY. Printed in a column beside
+    Eli Lilly's USD they read as one scale, and "over $50M" silently becomes
+    "over about $340k" for a Japanese line.
+    """
+    db.add(
+        Stock(
+            ticker="4502.T",
+            company_name="Takeda",
+            sector="pharma",
+            currency="JPY",
+            market_cap=8_900_000_000_000.0,
+        )
+    )
+    await db.commit()
+
+    body = (await client.get("/fundamentals")).json()
+
+    assert body["rows"][0]["currency"] == "JPY"
+    assert "never converted" in body["coverage"]["currency_warning"]

@@ -18,6 +18,9 @@ router = APIRouter(tags=["fundamentals"])
 @router.get("/fundamentals", summary="Market cap, earnings surprise and analyst movement")
 async def list_fundamentals(
     group: str | None = Query(default=None, description="Limit to an industry group"),
+    sector: str | None = Query(
+        default=None, description="Limit to one sector, e.g. clinical_stage"
+    ),
     min_market_cap: float | None = Query(
         default=None, ge=0, description="In units of the listing currency, not millions"
     ),
@@ -40,6 +43,11 @@ async def list_fundamentals(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"Unknown group {group!r}. Try GET /stocks/sectors.",
         )
+    if sector and not sectors.is_known_sector(sector):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Unknown sector {sector!r}. Try GET /stocks/sectors.",
+        )
 
     factors = await fundamentals.load_all(db)
     stocks = {
@@ -60,6 +68,8 @@ async def list_fundamentals(
             continue
         if wanted is not None and stock.ticker.upper() not in wanted:
             continue
+        if sector and (stock.sector or "").lower() != sector.strip().lower():
+            continue
         if has_earnings and factor.earnings_surprise_pct is None:
             continue
         if min_market_cap is not None and (
@@ -75,7 +85,12 @@ async def list_fundamentals(
             {
                 "ticker": stock.ticker,
                 "company_name": stock.company_name,
+                "sector": stock.sector,
                 "sector_group": sectors.group_for(stock.sector),
+                # Market cap is in the listing currency, so the number is
+                # meaningless without it: TSMC's is in TWD and Takeda's in JPY,
+                # and both sat unlabelled beside Eli Lilly's USD.
+                "currency": stock.currency,
                 **factor.as_dict(),
             }
         )
@@ -102,6 +117,13 @@ async def list_fundamentals(
             "note": (
                 "The free vendor tier covers US listings. Non-US symbols report "
                 "None rather than a stale or invented value."
+            ),
+            "currency_warning": (
+                "market_cap is in each listing's own currency and is never "
+                "converted, so min_market_cap/max_market_cap compare unlike "
+                "quantities: 50000000 is $50M against a US line and about "
+                "$340k against a Japanese one. Filter within one currency, or "
+                "read the currency field on every row."
             ),
         },
         "rows": rows[:limit],
