@@ -419,6 +419,12 @@ async def test_a_refused_batch_reports_which_status_refused_it(
 
     assert report.unreachable == 3
     assert report.failures == {"HTTP 429": 3}
+    # The status says a source refused us; the URL says whether we asked for
+    # the right thing. A 404 on a URL we built wrong and a 429 on a correct
+    # one are repaired in different files, and the count alone cannot tell
+    # them apart.
+    assert report.failed_samples[0]["url"].startswith("https://www.sec.gov/")
+    assert report.failed_samples[0]["failure"] == "HTTP 429"
 
 
 @pytest.mark.asyncio

@@ -317,6 +317,10 @@ class FilingTextReport:
     # Why the unreachable ones were unreachable, by HTTP status or exception
     # name. "unreachable: 499" is not a diagnosis; "403 x 499" is.
     failures: dict[str, int] = field(default_factory=dict)
+    # And the URLs that failed. A status alone still cannot distinguish a
+    # source refusing us from a URL we built wrong, and those are repaired in
+    # completely different files.
+    failed_samples: list[dict] = field(default_factory=list)
     stopped_early: str | None = None
     samples: list[dict] = field(default_factory=list)
 
@@ -331,6 +335,7 @@ class FilingTextReport:
             "no_narrative": self.no_narrative,
             "unreachable": self.unreachable,
             "failures": self.failures,
+            "failed_samples": self.failed_samples,
             "stopped_early": self.stopped_early,
             "samples": self.samples,
         }
@@ -352,6 +357,10 @@ SEC_REQUEST_DELAY_SECONDS = 0.15
 # to send four hundred more requests at a regulator that has just said no is
 # how an IP stops being welcome.
 MAX_CONSECUTIVE_FAILURES = 10
+
+# Enough failing URLs to see the shape of the problem, few enough that the
+# report stays readable.
+MAX_FAILED_SAMPLES = 5
 
 
 async def backfill_filing_text(
@@ -425,6 +434,10 @@ async def backfill_filing_text(
             if failure is not None:
                 report.unreachable += 1
                 report.failures[failure] = report.failures.get(failure, 0) + 1
+                if len(report.failed_samples) < MAX_FAILED_SAMPLES:
+                    report.failed_samples.append(
+                        {"url": article.url, "failure": failure}
+                    )
                 consecutive += 1
                 if consecutive >= MAX_CONSECUTIVE_FAILURES:
                     report.stopped_early = (
