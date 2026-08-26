@@ -9,8 +9,14 @@ and backtests how news historically moved prices.
 ## Running it locally
 
 ```powershell
-.\scripts\start.ps1
+.\scripts\start.cmd
 ```
+
+Use the `.cmd`, not the `.ps1` directly. PowerShell's default execution policy
+on Windows desktop refuses to run `.ps1` files at all, and it reports that as a
+`SecurityError` that reads like a broken script rather than a machine-wide
+setting. The wrapper runs the same script with a bypass scoped to that single
+process, so nothing about the system changes.
 
 Starts the backend and the dashboard together and prints the URLs. It picks a
 port that will actually bind rather than assuming 8000 is free, and tells the
