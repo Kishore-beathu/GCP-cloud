@@ -32,7 +32,38 @@ def _to_alert_out(alert: UserAlert, ticker: str) -> AlertOut:
     "", response_model=AlertOut, status_code=status.HTTP_201_CREATED, summary="Create an alert"
 )
 async def create_alert(payload: AlertCreate, db: AsyncSession = Depends(get_db)) -> AlertOut:
+    """Create an alert, or return the identical one that already exists.
+
+    Creating the same rule twice used to make two rules, and every matching
+    article then fired both: two notifications, two alert_history rows, and a
+    watchlist showing "ALNY positive news" twice with no way to tell the copies
+    apart. Nothing about that is a second opinion — it is the same rule
+    evaluated twice.
+
+    Identity is the user, the symbol, the type and the condition: what decides
+    *whether* it fires. Channels are excluded because they decide where it goes,
+    and quietly merging them into an existing rule would change a rule the
+    caller did not ask to change. An existing rule is returned as it stands.
+    """
     stock = await get_stock_or_404(db, payload.ticker)
+
+    existing = (
+        await db.execute(
+            select(UserAlert).where(
+                UserAlert.user_id == payload.user_id,
+                UserAlert.ticker_id == stock.id,
+                UserAlert.alert_type == payload.alert_type.value,
+                UserAlert.is_active.is_(True),
+            )
+        )
+    ).scalars()
+    for candidate in existing:
+        # Compared in Python: `condition` is JSON, and equality on a JSON
+        # column is backend-specific — SQLite has no JSON equality operator at
+        # all, so a database-side comparison would work on Postgres and
+        # silently match nothing here.
+        if candidate.condition == payload.condition:
+            return _to_alert_out(candidate, stock.ticker)
 
     alert = UserAlert(
         user_id=payload.user_id,

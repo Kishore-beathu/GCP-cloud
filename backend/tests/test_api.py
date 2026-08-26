@@ -525,3 +525,57 @@ async def test_stock_list_needs_two_days_for_a_change(client, db, seeded_stocks)
 
     assert row["last_price"] == 42.5
     assert row["last_change_pct"] is None
+
+
+# --- Duplicate alert rules ----------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_creating_the_same_alert_twice_returns_the_first(client, seeded_stocks):
+    """Two identical rules are not a second opinion; they are one rule twice.
+
+    On a live dashboard "ALNY positive news" appeared twice in the alert list
+    with no way to tell the copies apart, and every matching article fired
+    both — two notifications and two alert_history rows for one event.
+    """
+    payload = {
+        "ticker": seeded_stocks[0].ticker,
+        "alert_type": "positive_news",
+        "condition": {"min_score": 0.5},
+    }
+
+    first = (await client.post("/alerts", json=payload)).json()
+    second = (await client.post("/alerts", json=payload)).json()
+
+    assert first["id"] == second["id"]
+    listed = (await client.get("/alerts")).json()
+    assert len([row for row in listed if row["ticker"] == seeded_stocks[0].ticker]) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_different_condition_is_a_different_alert(client, seeded_stocks):
+    """Identity is what decides whether it fires, not merely the symbol."""
+    base = {"ticker": seeded_stocks[0].ticker, "alert_type": "positive_news"}
+
+    first = (await client.post("/alerts", json={**base, "condition": {"min_score": 0.5}})).json()
+    second = (await client.post("/alerts", json={**base, "condition": {"min_score": 0.9}})).json()
+
+    assert first["id"] != second["id"]
+
+
+@pytest.mark.asyncio
+async def test_a_duplicate_does_not_silently_rewrite_the_existing_channels(
+    client, seeded_stocks
+):
+    """Returning the existing rule must not change a rule nobody asked to change."""
+    payload = {
+        "ticker": seeded_stocks[0].ticker,
+        "alert_type": "positive_news",
+        "condition": {"min_score": 0.5},
+        "channels": ["in_app"],
+    }
+    await client.post("/alerts", json=payload)
+
+    again = (await client.post("/alerts", json={**payload, "channels": ["slack"]})).json()
+
+    assert again["channels"] == ["in_app"]
