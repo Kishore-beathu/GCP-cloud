@@ -301,3 +301,140 @@ async def audit_attribution(
         logger.info("Deleted %d misattributed articles", report.deleted)
 
     return report
+
+
+@dataclass
+class FilingTextReport:
+    """What a filing-text backfill pass did."""
+
+    examined: int = 0
+    fetched: int = 0
+    updated: int = 0
+    rescored: int = 0
+    no_narrative: int = 0
+    unreachable: int = 0
+    samples: list[dict] = field(default_factory=list)
+
+    def as_dict(self) -> dict:
+        return {
+            "examined": self.examined,
+            "fetched": self.fetched,
+            "updated": self.updated,
+            "rescored": self.rescored,
+            # The filing was read and had no Item 8.01 narrative worth storing —
+            # a pointer to an exhibit, or a different item entirely.
+            "no_narrative": self.no_narrative,
+            "unreachable": self.unreachable,
+            "samples": self.samples,
+        }
+
+
+# Metadata-only bodies are short: a form description, the item titles, and
+# sometimes a one-line vendor description. A body longer than this already has
+# a narrative in it and does not need fetching again.
+METADATA_BODY_CHARS = 400
+
+
+async def backfill_filing_text(
+    db: AsyncSession,
+    limit: int = 200,
+    analyzer: SentimentAnalyzer | None = None,
+) -> FilingTextReport:
+    """Fetch and store the narrative for 8-Ks already ingested without one.
+
+    Ingestion dedupes on ``(url, source)``, so a filing already stored is never
+    revisited — which means reading filing text would have applied only to
+    filings arriving from now on, and never to the corpus the sentiment pillar
+    and the backtest actually read. That would make the feature decorative.
+
+    Rescoring happens here rather than being left to the caller. An article
+    whose body changes but whose score does not is worse than one that was
+    never touched: it reads as evidence that the new text carried no sentiment,
+    when in fact nothing looked.
+    """
+    import httpx
+
+    from app.integrations.sec import SOURCE as SEC_SOURCE
+    from app.integrations.sec import _headers
+    from app.services.filing_text import prepare
+
+    report = FilingTextReport()
+    analyzer = analyzer or get_analyzer()
+
+    rows = (
+        await db.execute(
+            select(NewsArticle, Stock.sector)
+            .join(Stock, Stock.id == NewsArticle.ticker_id)
+            .where(
+                NewsArticle.source == SEC_SOURCE,
+                NewsArticle.headline.contains("8-K"),
+                NewsArticle.url.startswith("http"),
+            )
+            .order_by(NewsArticle.published_at.desc())
+            .limit(limit)
+        )
+    ).all()
+
+    candidates = [
+        (article, sector)
+        for article, sector in rows
+        if len(article.body or "") <= METADATA_BODY_CHARS
+    ]
+    report.examined = len(candidates)
+    if not candidates:
+        return report
+
+    async with httpx.AsyncClient() as client:
+        for article, sector in candidates:
+            try:
+                response = await client.get(
+                    article.url, headers=_headers(), timeout=30.0
+                )
+                response.raise_for_status()
+            except httpx.HTTPError:
+                report.unreachable += 1
+                continue
+
+            report.fetched += 1
+            try:
+                narrative = prepare(response.text)
+            except Exception:  # noqa: BLE001 - filings are malformed creatively
+                narrative = None
+            if not narrative:
+                report.no_narrative += 1
+                continue
+
+            article.body = f"{article.body or ''} {narrative}".strip()
+            report.updated += 1
+            if len(report.samples) < 10:
+                report.samples.append(
+                    {"ticker": article.stock.ticker if article.stock else None,
+                     "headline": article.headline,
+                     "narrative_chars": len(narrative)}
+                )
+
+            score = (
+                await db.execute(
+                    select(SentimentScore).where(
+                        SentimentScore.article_id == article.id
+                    )
+                )
+            ).scalar_one_or_none()
+            if score is None:
+                continue
+
+            result = analyzer.analyze_sentiment(
+                article.headline, article.body, overlay_key(sector)
+            )
+            event = analyzer.classify_event_type(article.headline, article.body)
+            score.sentiment = result.sentiment.value
+            score.score = result.score
+            score.confidence = result.confidence
+            score.event_type = event.primary_event.value
+            score.event_confidence = event.confidence
+            score.model_version = analyzer.model_version
+            report.rescored += 1
+
+    await db.commit()
+    logger.info("Filing text backfill: %s", report.as_dict())
+    return report

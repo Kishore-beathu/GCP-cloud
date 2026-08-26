@@ -28,6 +28,7 @@ from app.schemas import HealthResponse
 from app.security import require_auth
 from app.services.rescore import (
     audit_attribution,
+    backfill_filing_text,
     repair_article_links,
     rescore_articles,
     stale_count,
@@ -444,6 +445,30 @@ async def audit_news_attribution(
     report = await audit_attribution(
         db, apply=apply, sources=tuple(source) if source else ("yahoo_news",)
     )
+    return report.as_dict()
+
+
+@router.post(
+    "/admin/news/backfill-filing-text",
+    summary="Fetch the narrative for 8-Ks already stored without one",
+    dependencies=[Depends(require_auth)],
+)
+async def backfill_filings(
+    limit: int = Query(default=200, ge=1, le=2000),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Apply filing-text reading to filings already in the database.
+
+    Ingestion dedupes on the article URL, so a filing already stored is never
+    revisited — which would have left this applying only to filings arriving
+    from now on, and never to the corpus the sentiment pillar and the backtest
+    actually read.
+
+    Each updated article is rescored in the same pass. A body that changes
+    without its score changing is worse than one left alone: it reads as
+    evidence the new text carried no sentiment, when nothing looked.
+    """
+    report = await backfill_filing_text(db, limit=limit)
     return report.as_dict()
 
 

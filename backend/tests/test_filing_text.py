@@ -7,6 +7,8 @@ gap is the largest untapped signal in the stack, and it scored exactly 0.00.
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 import pytest
 
 from app.services.filing_text import (
@@ -274,3 +276,89 @@ async def test_other_item_types_are_not_fetched():
         await fetch_sec_filings(client, "TSTP", "0001234567")
 
     assert all("submissions" in url for url in fetched)
+
+
+# --- Backfilling what was ingested before ------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_the_backfill_reaches_filings_already_stored(db, seeded_stocks, monkeypatch):
+    """Ingestion dedupes on the article URL, so a stored filing is never revisited.
+
+    Without this, reading filing text applies only to filings arriving from now
+    on and never to the corpus the sentiment pillar and the backtest read —
+    which makes the feature decorative.
+    """
+    import httpx
+
+    from app.models import NewsArticle, SentimentScore
+    from app.services.rescore import backfill_filing_text
+
+    stock = seeded_stocks[0]
+    article = NewsArticle(
+        ticker_id=stock.id,
+        headline=f"{stock.company_name} filed 8-K: Other Events",
+        body="Form 8-K filed 2026-08-20 (Current report). Reported items: Other Events.",
+        source="sec_edgar",
+        url="https://www.sec.gov/Archives/edgar/data/1/2/form8k.htm",
+        published_at=datetime.now(timezone.utc),
+    )
+    db.add(article)
+    await db.flush()
+    db.add(
+        SentimentScore(
+            article_id=article.id, sentiment="neutral", score=0.0, confidence=0.25,
+            event_type="other", event_confidence=0.0, model_version="lexicon-v1",
+        )
+    )
+    await db.commit()
+
+    monkeypatch.setattr(
+        httpx.AsyncClient,
+        "get",
+        lambda self, url, **kwargs: _response(_filing()),
+    )
+
+    report = await backfill_filing_text(db)
+
+    assert report.updated == 1
+    assert report.rescored == 1
+    await db.refresh(article)
+    assert "primary endpoint" in article.body
+
+
+@pytest.mark.asyncio
+async def test_a_filing_that_already_has_its_narrative_is_left_alone(db, seeded_stocks):
+    """A long body already carries the text; fetching it again spends a request."""
+    from app.models import NewsArticle
+    from app.services.rescore import backfill_filing_text
+
+    stock = seeded_stocks[0]
+    db.add(
+        NewsArticle(
+            ticker_id=stock.id,
+            headline="Co filed 8-K: Other Events",
+            body="x" * 1200,
+            source="sec_edgar",
+            url="https://www.sec.gov/Archives/edgar/data/1/2/form8k.htm",
+            published_at=datetime.now(timezone.utc),
+        )
+    )
+    await db.commit()
+
+    report = await backfill_filing_text(db)
+
+    assert report.examined == 0
+    assert report.fetched == 0
+
+
+class _Resp:
+    def __init__(self, text: str) -> None:
+        self.text = text
+
+    def raise_for_status(self) -> None:
+        return None
+
+
+async def _response(text: str):
+    return _Resp(text)
