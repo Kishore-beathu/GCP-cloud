@@ -40,7 +40,13 @@ from app.integrations.finnhub import (
     fetch_profile,
     fetch_recommendations,
 )
-from app.models import AnalystTrend, EarningsReport, Stock, ValuationSnapshot
+from app.models import (
+    AnalystTrend,
+    EarningsReport,
+    InsiderTransaction,
+    Stock,
+    ValuationSnapshot,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -297,6 +303,13 @@ def _aware(moment: datetime) -> datetime:
     return moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)
 
 
+# How far back insider trades count. Ninety days is the usual window in the
+# literature, and it is long enough that a cluster of buyers is visible while
+# short enough that a purchase before the last earnings report has stopped
+# being a statement about the current price.
+INSIDER_WINDOW_DAYS = 90
+
+
 # --- Factors -----------------------------------------------------------------
 
 
@@ -332,6 +345,15 @@ class Fundamentals:
     return_on_equity: float | None = None
     valuation_as_of: str | None = None
 
+    # --- Insider activity ----------------------------------------------------
+    # Net open-market value bought minus sold over the window, and how many
+    # distinct people bought. The count matters separately from the value: one
+    # executive buying a large block is one opinion, and five buying small ones
+    # is five — and the literature is clearer about the breadth than the size.
+    insider_net_value_90d: float | None = None
+    insider_buyers_90d: int = 0
+    insider_sellers_90d: int = 0
+
     def as_dict(self) -> dict:
         return {
             "market_cap": self.market_cap,
@@ -347,6 +369,9 @@ class Fundamentals:
             "revenue_growth_yoy": self.revenue_growth_yoy,
             "return_on_equity": self.return_on_equity,
             "valuation_as_of": self.valuation_as_of,
+            "insider_net_value_90d": self.insider_net_value_90d,
+            "insider_buyers_90d": self.insider_buyers_90d,
+            "insider_sellers_90d": self.insider_sellers_90d,
         }
 
 
@@ -373,6 +398,7 @@ def summarise(
     trends: list[AnalystTrend],
     now: datetime | None = None,
     valuations: list[ValuationSnapshot] | None = None,
+    insider: list[InsiderTransaction] | None = None,
 ) -> Fundamentals:
     """Reduce one symbol's stored rows to the factors the ranking uses."""
     now = now or datetime.now(timezone.utc)
@@ -404,6 +430,24 @@ def summarise(
         if latest is not None and previous is not None:
             revision = round(latest - previous, 4)
 
+    # Insider activity over the trailing window, counted by person rather than
+    # by filing: an officer who files three times in a week is one opinion.
+    since = (now - timedelta(days=INSIDER_WINDOW_DAYS)).date()
+    recent_insider = [
+        row for row in (insider or []) if row.traded_on and row.traded_on >= since
+    ]
+    net_value = None
+    buyers: set[str] = set()
+    sellers: set[str] = set()
+    if recent_insider:
+        net_value = sum(row.value or 0.0 for row in recent_insider)
+        for row in recent_insider:
+            who = row.insider_name or f"unnamed:{row.accession}"
+            if row.transaction_code == "P":
+                buyers.add(who)
+            elif row.transaction_code == "S":
+                sellers.add(who)
+
     # Newest snapshot wins. Older ones stay for the backtest, which needs the
     # ratio as it stood rather than as it stands.
     latest_valuation = None
@@ -426,11 +470,14 @@ def summarise(
         valuation_as_of=(
             latest_valuation.captured_on.isoformat() if latest_valuation else None
         ),
+        insider_net_value_90d=net_value,
+        insider_buyers_90d=len(buyers),
+        insider_sellers_90d=len(sellers),
     )
 
 
 async def load_all(db: AsyncSession) -> dict[int, Fundamentals]:
-    """Every active symbol's factors, in four queries rather than 4N."""
+    """Every active symbol's factors, in five queries rather than 5N."""
     stocks = list(
         (
             await db.execute(select(Stock).where(Stock.is_active.is_(True)))
@@ -454,6 +501,14 @@ async def load_all(db: AsyncSession) -> dict[int, Fundamentals]:
     ).scalars():
         trends.setdefault(row.ticker_id, []).append(row)
 
+    insider: dict[int, list[InsiderTransaction]] = {}
+    for row in (
+        await db.execute(
+            select(InsiderTransaction).where(InsiderTransaction.ticker_id.in_(by_id))
+        )
+    ).scalars():
+        insider.setdefault(row.ticker_id, []).append(row)
+
     valuations: dict[int, list[ValuationSnapshot]] = {}
     for row in (
         await db.execute(
@@ -468,6 +523,7 @@ async def load_all(db: AsyncSession) -> dict[int, Fundamentals]:
             earnings.get(stock.id, []),
             trends.get(stock.id, []),
             valuations=valuations.get(stock.id, []),
+            insider=insider.get(stock.id, []),
         )
         for stock in stocks
     }

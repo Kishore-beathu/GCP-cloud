@@ -344,6 +344,60 @@ class EarningsReport(Base):
     stock: Mapped[Stock] = relationship()
 
 
+class InsiderTransaction(Base):
+    """One open-market insider trade, from a Form 4.
+
+    Individually these move nothing, which is why the news firehose filters
+    them out — a single officer selling on a schedule is noise, and the feed
+    carries thousands a day. In aggregate they are different: a cluster of
+    officers buying their own stock on the open market is one of the
+    better-evidenced signals available, and it is information no news feed
+    carries because it is not news.
+
+    Only open-market purchases and sales are stored. A grant, an option
+    exercise or a tax withholding is a compensation event that says nothing
+    about what anyone thinks the stock is worth, and mixing them in would swamp
+    the deliberate trades with mechanical ones.
+    """
+
+    __tablename__ = "insider_transactions"
+    __table_args__ = (
+        # An accession can hold several transactions; the sequence
+        # distinguishes them. Together they make re-ingesting a filing a no-op.
+        UniqueConstraint(
+            "accession", "sequence", name="uq_insider_accession_sequence"
+        ),
+        Index("ix_insider_ticker_traded", "ticker_id", "traded_on"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    ticker_id: Mapped[int] = mapped_column(
+        ForeignKey("stocks.id", ondelete="CASCADE"), index=True
+    )
+    accession: Mapped[str] = mapped_column(String(32), index=True)
+    sequence: Mapped[int] = mapped_column(Integer, default=0)
+
+    # The trade date, not the filing date. Form 4 is due within two business
+    # days, and ranking on when the paperwork arrived would put a Monday trade
+    # and a Wednesday trade in different weeks.
+    traded_on: Mapped[date] = mapped_column(Date, index=True)
+    filed_on: Mapped[date | None] = mapped_column(Date)
+
+    insider_name: Mapped[str | None] = mapped_column(String(255))
+    insider_title: Mapped[str | None] = mapped_column(String(255))
+    # P (open-market purchase) or S (open-market sale).
+    transaction_code: Mapped[str] = mapped_column(String(2), index=True)
+    shares: Mapped[float | None] = mapped_column(Float)
+    price_per_share: Mapped[float | None] = mapped_column(Float)
+    # Signed: positive for an acquisition, negative for a disposal, so summing
+    # a symbol's rows gives net conviction without re-reading the code.
+    value: Mapped[float | None] = mapped_column(Float)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
 class ValuationSnapshot(Base):
     """Valuation and quality ratios for one symbol, as at one date.
 

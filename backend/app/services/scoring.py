@@ -47,11 +47,13 @@ from app.models import (
     EarningsReport,
     NewsArticle,
     SentimentScore,
+    InsiderTransaction,
     Stock,
     StockPrice,
     ValuationSnapshot,
 )
 from app.services import sectors, technicals
+from app.services.fundamentals import INSIDER_WINDOW_DAYS
 from app.services.technicals import Technicals
 
 
@@ -251,6 +253,7 @@ def strategy_names() -> tuple[str, ...]:
         *TECHNICAL_WEIGHTS,
         *SENTIMENT_WEIGHTS,
         *VALUATION_WEIGHTS,
+        *INSIDER_WEIGHTS,
         "earnings_surprise_pct",
     )
     return (
@@ -302,6 +305,18 @@ FUNDAMENTAL_WEIGHTS: dict[str, tuple[str, float, str]] = {
 # Cheap is scored higher for the three multiples — a low P/E ranks above a high
 # one — so they are inverted, like volatility. Margin, growth and return on
 # equity are not: more is better and the ranking says so.
+# Insider activity, also weightless. Same route as everything else.
+#
+# Buyers and sellers are counted separately rather than netted into one number,
+# because they are not symmetrical: an insider buys for one reason and sells
+# for many — diversification, a house, a scheduled plan — so a purchase carries
+# more information than a sale of the same size. Netting them would treat the
+# two as opposites and quietly discard that.
+INSIDER_WEIGHTS: dict[str, tuple[str, float, str]] = {
+    "insider_net_value_90d": ("Insider net buying", 0.0, "Bought minus sold, 90 days"),
+    "insider_buyers_90d": ("Insider buyers", 0.0, "Distinct people buying, 90 days"),
+}
+
 VALUATION_WEIGHTS: dict[str, tuple[str, float, str]] = {
     "pe_ratio": ("Price / earnings", 0.0, "Lower is scored higher"),
     "ps_ratio": ("Price / sales", 0.0, "Lower is scored higher"),
@@ -394,6 +409,7 @@ class _Raw:
     news_count: int
     fundamentals: dict[str, float | None] = field(default_factory=dict)
     valuation: dict[str, float | None] = field(default_factory=dict)
+    insider: dict[str, float | None] = field(default_factory=dict)
 
 
 def percentile_ranks(values: dict[str, float | None]) -> dict[str, float | None]:
@@ -488,6 +504,7 @@ async def _load_inputs(db: AsyncSession, days: int) -> list[_Raw]:
             news_count=len(news.get(stock.id, [])),
             fundamentals=_fundamental_values(factors.get(stock.id)),
             valuation=_valuation_values(factors.get(stock.id)),
+            insider=_insider_values(factors.get(stock.id)),
         )
         for stock in stocks
     ]
@@ -508,6 +525,30 @@ def _valuation_values(factor) -> dict[str, float | None]:
     if factor is None:
         return {key: None for key in VALUATION_WEIGHTS}
     return {key: getattr(factor, key, None) for key in VALUATION_WEIGHTS}
+
+
+def _insider_values(factor) -> dict[str, float | None]:
+    """Insider activity, keyed to match INSIDER_WEIGHTS.
+
+    A symbol with no stored trades reports None rather than zero. "Nobody
+    traded" and "trades netted to nothing" are different facts, and ranking
+    them together would put every uncovered symbol in the middle of the
+    distribution on no information — the same mistake the analyst-opinion
+    factor was written to avoid.
+    """
+    if factor is None:
+        return {key: None for key in INSIDER_WEIGHTS}
+    traded = (
+        factor.insider_net_value_90d is not None
+        or factor.insider_buyers_90d
+        or factor.insider_sellers_90d
+    )
+    if not traded:
+        return {key: None for key in INSIDER_WEIGHTS}
+    return {
+        "insider_net_value_90d": factor.insider_net_value_90d,
+        "insider_buyers_90d": float(factor.insider_buyers_90d),
+    }
 
 
 def _summarise_news(
@@ -650,6 +691,13 @@ async def score_universe(db: AsyncSession, days: int = 30) -> list[StockScore]:
     valuation_ranks = {
         key: percentile_ranks(values) for key, values in valuation_values.items()
     }
+    insider_values = {
+        key: {raw.stock.ticker: raw.insider.get(key) for raw in inputs}
+        for key in INSIDER_WEIGHTS
+    }
+    insider_ranks = {
+        key: percentile_ranks(values) for key, values in insider_values.items()
+    }
 
     scored: list[StockScore] = []
     for raw in inputs:
@@ -672,6 +720,9 @@ async def score_universe(db: AsyncSession, days: int = 30) -> list[StockScore]:
         _, valuation_factors, _ = _pillar(
             raw, valuation_ranks, VALUATION_WEIGHTS, raw.valuation
         )
+        _, insider_factors, _ = _pillar(
+            raw, insider_ranks, INSIDER_WEIGHTS, raw.insider
+        )
 
         blended = _blend(technical, sentiment, raw.news_count, fundamental)
         if blended is None:
@@ -692,7 +743,7 @@ async def score_universe(db: AsyncSession, days: int = 30) -> list[StockScore]:
                 fundamental_score=fundamental,
                 fundamental_imputed=fundamental is None,
                 fundamental_factors=fundamental_factors,
-                valuation_factors=valuation_factors,
+                valuation_factors=valuation_factors + insider_factors,
                 # What share of the intended inputs this score actually used.
                 coverage=round(weight_total, 2),
                 factors=sorted(
@@ -908,6 +959,7 @@ def _rank_at(
     news_days: int,
     earnings: dict[str, list[tuple[datetime, float]]] | None = None,
     valuations: dict[str, list[tuple[date, dict[str, float | None]]]] | None = None,
+    insider: dict[str, list[tuple[date, str, float]]] | None = None,
 ) -> dict[str, list[tuple[str, float]]]:
     """Rank the universe as it stood at ``as_of``, three ways.
 
@@ -985,6 +1037,34 @@ def _rank_at(
         ]
         if history_rows:
             valuation_at[symbol] = max(history_rows, key=lambda row: row[0])[1]
+
+    # Insider activity as it stood at as_of. Genuinely reconstructible, unlike
+    # valuation: a Form 4 carries the trade date, so the window can be rebuilt
+    # for any past date from rows filed since.
+    window_start = as_of_date - timedelta(days=INSIDER_WINDOW_DAYS)
+    insider_at: dict[str, dict[str, float | None]] = {}
+    for symbol in tech_inputs:
+        rows = [
+            row
+            for row in (insider or {}).get(symbol, [])
+            if window_start <= row[0] <= as_of_date
+        ]
+        if not rows:
+            continue
+        insider_at[symbol] = {
+            "insider_net_value_90d": sum(row[2] for row in rows),
+            "insider_buyers_90d": float(
+                len({row[1] for row in rows if row[2] > 0})
+            ),
+        }
+
+    for key in INSIDER_WEIGHTS:
+        ranks = percentile_ranks(
+            {symbol: insider_at.get(symbol, {}).get(key) for symbol in tech_inputs}
+        )
+        rankings[f"{FACTOR_PREFIX}{key}"] = [
+            (symbol, value) for symbol, value in ranks.items() if value is not None
+        ]
 
     for key in VALUATION_WEIGHTS:
         ranks = percentile_ranks(
@@ -1170,6 +1250,21 @@ async def validate(
     # earlier than that ranks nothing and _spread reports too_few_symbols —
     # which is the honest answer, and turns into a real measurement as history
     # builds rather than needing the wiring to change later.
+    # Insider trades, keyed by trade date rather than filing date. Form 4 is
+    # due within two business days, and ranking on when the paperwork landed
+    # would put a Monday trade and a Wednesday one in different windows.
+    insider: dict[str, list[tuple[date, str, float]]] = {}
+    for row in (
+        await db.execute(
+            select(InsiderTransaction).where(InsiderTransaction.ticker_id.in_(by_id))
+        )
+    ).scalars():
+        if row.traded_on is None or row.value is None:
+            continue
+        insider.setdefault(by_id[row.ticker_id], []).append(
+            (row.traded_on, row.insider_name or f"unnamed:{row.accession}", row.value)
+        )
+
     valuations: dict[str, list[tuple[date, dict[str, float | None]]]] = {}
     for row in (
         await db.execute(
@@ -1198,7 +1293,7 @@ async def validate(
 
         rankings = _rank_at(
             as_of, history, news, news_days=30, earnings=earnings,
-            valuations=valuations,
+            valuations=valuations, insider=insider,
         )
         # Every period carries every strategy, whether or not this period could
         # rank it. A key present in some periods and absent from others makes

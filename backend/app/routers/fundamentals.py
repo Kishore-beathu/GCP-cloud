@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db
 from app.models import AnalystTrend, EarningsReport, Stock
 from app.security import require_auth
+from app.integrations import insider
 from app.services import catalysts, fundamentals, sectors
 from app.services.tickers import tickers_in_group
 
@@ -251,6 +252,26 @@ async def trigger_fundamentals(
 ) -> dict:
     """Three vendor calls per symbol, so it runs inline and reports counts."""
     report = await fundamentals.ingest_fundamentals(db, ticker, only_stale, include_non_us)
+    return report.as_dict()
+
+
+@router.post(
+    "/admin/ingest/insider",
+    summary="Fetch recent open-market insider trades from Form 4",
+    dependencies=[Depends(require_auth)],
+)
+async def trigger_insider(
+    ticker: list[str] | None = Query(default=None),
+    lookback_days: int = Query(default=insider.DEFAULT_LOOKBACK_DAYS, ge=1, le=365),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Two SEC requests per symbol, so it runs inline and reports counts.
+
+    Scoped to the tracked universe. Every US issuer files these and the daily
+    feed is thousands of rows, of which a handful concern companies here —
+    filtering by CIK first is what makes the fetch possible at all.
+    """
+    report = await insider.ingest_insider_transactions(db, ticker, lookback_days)
     return report.as_dict()
 
 
