@@ -278,3 +278,52 @@ def test_a_large_cap_drugmaker_keeps_the_base_reading():
     headline = "Pfizer Announces Public Offering of Senior Notes"
 
     assert analyzer.score(headline, None, sentiment.overlay_key("pharma")).score == 0.0
+
+
+# --- "Loss" is only a financial word outside medicine -------------------------
+
+
+@pytest.mark.parametrize(
+    "headline",
+    [
+        "Is the Weight-Loss Drug Market a Winner-Take-All Fight",
+        "weight loss drug shows promise in phase 3",
+        "vision loss slowed in the treatment arm",
+        "muscle loss concerns with GLP-1 therapy",
+        "bone loss reversed in the extension study",
+        "trial showed loss of vision in the placebo arm",
+    ],
+)
+def test_a_therapeutic_loss_is_not_a_financial_one(headline):
+    """Half the indications in this universe are named "loss of something".
+
+    Obesity is the largest theme in pharma right now, and every GLP-1 headline
+    says "weight-loss": Lilly and Novo Nordisk were being marked down on their
+    own franchise. Ophthalmology, Alzheimer's, sarcopenia and osteoporosis all
+    have the same shape.
+    """
+    analyzer = LexiconAnalyzer()
+
+    matched = [
+        match["matched_text"]
+        for match in analyzer.explain(headline)["matches"]
+        if "loss" in match["matched_text"].lower()
+    ]
+
+    assert matched == [], f"{headline!r} scored 'loss' as financial"
+
+
+@pytest.mark.parametrize(
+    "headline",
+    [
+        "company reports a wider net loss",
+        "operating loss widened this quarter",
+        "the company posted a loss",
+        "quarterly losses narrowed",
+    ],
+)
+def test_a_financial_loss_still_counts(headline):
+    """The exclusion must not cost the term its actual job."""
+    analyzer = LexiconAnalyzer()
+
+    assert analyzer.score(headline).score < 0

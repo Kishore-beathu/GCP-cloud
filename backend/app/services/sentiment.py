@@ -159,7 +159,17 @@ _NEGATIVE_TERMS: dict[str, float] = {
     r"declin(?:e|es|ed|ing)": 0.6,
     r"downgrad\w*": 0.9,
     r"underperform\w*": 0.8,
-    r"loss(?:es)?\b": 0.6,
+    # "Loss" is a financial term everywhere except in medicine, where it names
+    # half the indications this universe develops drugs for: weight loss,
+    # vision loss, memory loss, muscle loss, bone loss. Obesity alone is the
+    # largest theme in pharma right now, so "Weight-Loss Drug Market" was
+    # scoring -1.00 and taking Lilly and Novo Nordisk down with it on every
+    # GLP-1 headline. The hyphen exclusion covers the compound forms in one
+    # go; the rest are the body parts that actually appear in trial news.
+    r"(?<!-)(?<!weight )(?<!hair )(?<!vision )(?<!hearing )(?<!memory )"
+    r"(?<!muscle )(?<!bone )(?<!blood )(?<!sight )"
+    r"loss(?:es)?\b(?!\s+of\s+(?:vision|hearing|sight|smell|taste|appetite|"
+    r"consciousness|mobility|function|independence))": 0.6,
     r"cut(?:s)? (?:guidance|outlook|forecast)": 1.0,
     r"low(?:ers|ered) (?:guidance|outlook|forecast)": 1.0,
     # Same events with the noun first: "guidance cut", "outlook lowered".
@@ -534,7 +544,7 @@ def _is_negated(text: str, match_start: int) -> bool:
 class LexiconAnalyzer:
     """Keyword scorer tuned for pharma and life-sciences headlines."""
 
-    model_version = "lexicon-v4"
+    model_version = "lexicon-v5"
 
     @staticmethod
     def _tally(text: str, lexicon_key: str | None = None) -> tuple[float, float, int]:
