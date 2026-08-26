@@ -697,10 +697,63 @@ async def test_a_symbol_without_earnings_coverage_is_reweighted_not_penalised(
     covered = beat
 
     assert scored[uncovered.ticker].fundamental_score is None
-    # Reported as built from less input, not marked down for it.
+    # Reported as built from less real input, not marked down for it.
     assert scored[uncovered.ticker].coverage < scored[covered.ticker].coverage
     # A bad surprise is what moves a score down; having no surprise is not.
     assert scored[uncovered.ticker].score > scored[missed.ticker].score
+
+
+@pytest.mark.asyncio
+async def test_an_uncovered_symbol_is_pulled_to_the_middle_like_everyone_else(db):
+    """Absent coverage must not buy a symbol a more extreme rank.
+
+    Excluding the pillar and reweighting the rest left an uncovered symbol
+    holding its raw technical percentile while covered peers had theirs pulled
+    toward the middle by a second factor. On the live universe that made
+    uncovered symbols 30% of the names and 47% of the top thirty — an artefact
+    of which listings the vendor covers, not of the companies.
+
+    Imputing the midpoint gives every symbol the same three axes: an uncovered
+    symbol and one whose fundamentals are exactly average now score alike.
+    """
+    from app.models import EarningsReport
+
+    strong = Stock(ticker="DDD", company_name="Strong tech", sector="pharma")
+    average = Stock(ticker="EEE", company_name="Average all round", sector="pharma")
+    weak = Stock(ticker="FFF", company_name="Weak", sector="pharma")
+    db.add_all([strong, average, weak])
+    await db.commit()
+    for stock in (strong, average, weak):
+        await db.refresh(stock)
+
+    # Identical price history, so only the fundamental axis can separate them.
+    for stock in (strong, average, weak):
+        await add_prices(db, stock, [100.0 * 1.002**day for day in range(80)])
+
+    now = datetime.now(timezone.utc)
+    db.add_all(
+        [
+            EarningsReport(
+                ticker_id=average.id, period=now - timedelta(days=10), eps_surprise_pct=5.0
+            ),
+            EarningsReport(
+                ticker_id=weak.id, period=now - timedelta(days=10), eps_surprise_pct=-30.0
+            ),
+        ]
+    )
+    await db.commit()
+
+    scored = {item.ticker: item for item in await scoring.score_universe(db)}
+
+    # The uncovered symbol is scored, flagged, and not credited with coverage
+    # it does not have.
+    assert scored["DDD"].fundamental_imputed is True
+    assert scored["DDD"].fundamental_score is None
+    assert scored["EEE"].fundamental_imputed is False
+    # And it does not outrank a symbol whose measured fundamentals are better
+    # than the midpoint purely by having none.
+    assert scored["DDD"].score <= scored["EEE"].score
+    assert scored["DDD"].score > scored["FFF"].score
 
 
 @pytest.mark.asyncio

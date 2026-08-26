@@ -97,8 +97,12 @@ class StockScore:
     # 52-week range wants 252 sessions — so it was ranked without that factor
     # and the rest were reweighted to fill the gap.
     technical_coverage: float = 0.0
-    # Reported, not blended. See FUNDAMENTAL_WEIGHTS.
+    # None when the vendor does not cover the symbol. The pillar still
+    # contributes at NEUTRAL_PERCENTILE in that case, and `fundamental_imputed`
+    # says so — a null here beside a score that used one would otherwise look
+    # like the pillar had been skipped.
     fundamental_score: float | None = None
+    fundamental_imputed: bool = False
     # Kept out of `factors` on purpose. That list is the score's arithmetic —
     # every entry's contribution is part of the number — and these contribute
     # nothing yet. Mixed in, a 0.55-weighted surprise would sort above every
@@ -131,6 +135,7 @@ class StockScore:
             "sentiment_confidence": self.sentiment_confidence,
             "technical_coverage": self.technical_coverage,
             "fundamental_score": self.fundamental_score,
+            "fundamental_imputed": self.fundamental_imputed,
             "fundamental_factors": [factor.as_dict() for factor in self.fundamental_factors],
             "rank": self.rank,
             "universe_size": self.universe_size,
@@ -192,6 +197,23 @@ PILLAR_WEIGHTS = {"technical": 0.5, "sentiment": 0.15, "fundamental": 0.35}
 # is deliberately not tuned against the validation window it is measured in.
 SENTIMENT_FULL_WEIGHT_ARTICLES = 5
 
+# What a missing fundamental is worth: the midpoint, not an exclusion.
+#
+# Excluding it and reweighting the rest looked like the careful choice, and it
+# had a structural consequence. A symbol the vendor does not cover kept its raw
+# technical percentile, while a covered symbol had that percentile pulled toward
+# the middle by a second factor — so uncovered symbols were over-represented at
+# *both* ends of the ranking for a reason about Finnhub's coverage rather than
+# about the company. Charles River fell out of the top ten on a fundamental of
+# 37.67 while an uncovered peer held third place on technicals alone, unable to
+# be marked down because there was nothing to mark it down with.
+#
+# The midpoint says "no information", which is what is true, and it moves a
+# score exactly as a genuinely middling factor would. Every symbol is then
+# ranked on the same three axes. `coverage` still counts only the inputs that
+# were real, so an imputed pillar is visible rather than passed off as measured.
+NEUTRAL_PERCENTILE = 50.0
+
 # The fundamental factors, and how they earned their pillar weight.
 #
 # Earnings surprise and analyst revisions have stronger published evidence
@@ -242,10 +264,12 @@ def _blend(
 ) -> tuple[float, float] | None:
     """Combine the pillars, discounting sentiment by the news behind it.
 
-    Returns the composite and the total weight it was built from — the latter
-    is `coverage`, and it now means what it says: the share of the intended
-    inputs that actually contributed. A symbol scored on price alone reports
-    0.6; one with a single article reports 0.68, not 1.0.
+    Returns the composite and the weight behind actual measurements — the
+    latter is `coverage`, and it means the share of the intended inputs that
+    were real. A symbol scored on price alone reports 0.5; one with a single
+    article reports 0.53. The fundamental pillar contributes to the score even
+    when imputed, and to `coverage` only when measured, so an imputed input is
+    visible rather than passed off as observed.
 
     Shared by the live score and the validation harness on purpose. If the
     backtest blended differently from the endpoint, it would be measuring a
@@ -253,27 +277,40 @@ def _blend(
     """
     weights: dict[str, float] = {}
     values: dict[str, float] = {}
+    # Weight backed by an actual measurement, which is what `coverage` reports.
+    measured = 0.0
 
     if technical is not None:
         weights["technical"] = PILLAR_WEIGHTS["technical"]
         values["technical"] = technical
+        measured += PILLAR_WEIGHTS["technical"]
     if sentiment is not None:
         confidence = sentiment_confidence(news_count)
         if confidence:
             weights["sentiment"] = PILLAR_WEIGHTS["sentiment"] * confidence
             values["sentiment"] = sentiment
-    # Absent for any symbol the vendor does not cover, which is most non-US
-    # listings. Missing means excluded and the rest reweighted, exactly as a
-    # missing sentiment pillar behaves — `coverage` reports how much of the
-    # intended input the score was actually built from.
+            measured += weights["sentiment"]
+
+    # The fundamental pillar always participates, at the midpoint when the
+    # vendor does not cover the symbol — see NEUTRAL_PERCENTILE.
+    weights["fundamental"] = PILLAR_WEIGHTS["fundamental"]
+    values["fundamental"] = (
+        fundamental if fundamental is not None else NEUTRAL_PERCENTILE
+    )
     if fundamental is not None:
-        weights["fundamental"] = PILLAR_WEIGHTS["fundamental"]
-        values["fundamental"] = fundamental
+        measured += PILLAR_WEIGHTS["fundamental"]
+
+    # A symbol with nothing measured at all is not scored. Without this the
+    # imputed pillar alone would hand every unpriced, unreported symbol a
+    # confident 50 and a rank to go with it.
+    if not measured:
+        return None
 
     total = sum(weights.values())
-    if not total:
-        return None
-    return sum(weights[name] * value for name, value in values.items()) / total, total
+    return (
+        sum(weights[name] * value for name, value in values.items()) / total,
+        measured,
+    )
 
 
 @dataclass
@@ -559,6 +596,7 @@ async def score_universe(db: AsyncSession, days: int = 30) -> list[StockScore]:
                 sentiment_confidence=round(sentiment_confidence(raw.news_count), 2),
                 technical_coverage=technical_weight,
                 fundamental_score=fundamental,
+                fundamental_imputed=fundamental is None,
                 fundamental_factors=fundamental_factors,
                 # What share of the intended inputs this score actually used.
                 coverage=round(weight_total, 2),
