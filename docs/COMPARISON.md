@@ -34,12 +34,12 @@ Its real advantages are ones the large platforms structurally cannot offer:
 | Real-time prices | Finnhub trade stream, demand-driven subscriptions | Full depth, direct exchange feeds | Delayed or consolidated feed |
 | News coverage | SEC EDGAR + Finnhub company news | Dozens of wires, exclusive sources, transcripts | Aggregated web/RSS |
 | Sentiment | Transparent domain lexicon (or FinBERT) | Proprietary, opaque, broad-market | Often none, or a crude score |
-| Event taxonomy | 12 pharma-relevant types | Extensive, general-purpose | Rare |
+| Event taxonomy | 12 types, sector-tuned | Extensive, general-purpose | Rare |
 | Alerting | In-app, Slack, email | Every channel, highly configurable | Email/push |
 | Backtesting news impact | Yes, per event type | Usually a separate product | Rare |
 | Screening | Region/country/venue/currency/sector/text | Hundreds of fundamental fields | Dozens of fields |
-| Fundamentals | **None** | Comprehensive | Moderate |
-| Analyst estimates | **None** | Comprehensive | Some |
+| Fundamentals | Earnings surprise and analyst revisions, US-listed coverage | Comprehensive | Moderate |
+| Analyst estimates | Recommendation trends only | Comprehensive | Some |
 | Filing full text | **Metadata only** | Full text + search | Varies |
 | Cost | Infrastructure + data API fees | Very high per seat | Low to moderate |
 
@@ -104,50 +104,77 @@ local currency.
 
 ## Against Danelfin specifically
 
-Danelfin is the closest comparison to what this platform now does: an AI score
-per stock, decomposed into pillars, with the features that drove it shown, and
-a published track record. Same caveat as everywhere else on this page — I could
-not reach their site while writing this, so treat the left column as a
-description of the *category* rather than a current fact sheet.
+Danelfin is the closest comparison to what this platform does: an AI score per
+stock, decomposed into pillars, with the features that drove it shown, and a
+published track record. Figures below are the vendor's own published claims,
+checked against their site and third-party reviews in August 2026 — not
+independently verified here, and their own materials describe the performance
+numbers as backtested rather than live-traded.
 
-| | Danelfin (as I understand it) | This platform |
+### Scores and metrics
+
+| | Danelfin | This platform |
 |---|---|---|
-| Score | AI Score 1–10, stated as probability of beating the market over ~3 months | 0–100 percentile rank. **No probability claim** |
-| Pillars | Fundamental, technical, sentiment | Technical, sentiment, fundamental — the last weighted only after it measured, and US-listed coverage only |
-| Features | ~900 per stock per day, machine-learned weights | 9 named factors, hand-set weights, arithmetic shown in full |
-| Explainability | Top features driving the score | Every factor, its raw value, percentile, weight and contribution |
-| Track record | Published, multi-year, third-party visible | `GET /scores/validation` measured on *your* data: several start dates, each pillar separately, reported with its caveats |
-| Universe | ~1,000 US + ~600 European | 163, whatever you seed |
-| Coverage honesty | — | `coverage` field states what share of intended inputs each score used |
-| Cost | Subscription | Infrastructure + data fees |
+| Score | AI Score 1–10, stated as the historical probability of beating the market over the next 3 months | 0–100 percentile rank. **No probability claim, no horizon claim** |
+| Pillars | Technical, fundamental, sentiment | Technical 0.50, fundamental 0.35, sentiment 0.15 |
+| How weights were set | Machine-learned | Measured: each pillar validated separately before it was weighted, and one was cut on the result |
+| Inputs | 10,000+ features per stock daily, from 900+ indicators (600+ technical, 150+ fundamental) | **11 named factors** — 5 technical, 4 sentiment, 2 fundamental |
+| Explainability | Top features driving the score | Every factor: raw value, percentile, weight, contribution. The whole calculation, reproducible by hand |
+| Sentiment inputs | Analyst revisions, insider activity, options flow | News sentiment from 10 sources, scored by a sector-aware lexicon you can read |
+| Event taxonomy | — | 12 types (FDA/regulatory, clinical trial, M&A, litigation, recall, capital raise, …) |
+| Coverage honesty | — | `coverage` per symbol; `fundamental_imputed` flags an assumed input |
 
-**Where Danelfin is straightforwardly better.** Fundamentals are a whole
-pillar this has nothing for. Machine-learned weights across hundreds of
-features will capture interactions that nine hand-weighted factors cannot. A
-published multi-year track record is worth far more than a single-period test
-on one user's database. Their universe is an order of magnitude larger.
+### Universe and track record
 
-**Where this is better, and it is not nothing.** The score is fully auditable
-— not "here are the top features" but the entire calculation, reproducible by
-hand from the response. It is tuned to a sector: the lexicon knows what a
-complete response letter and a CHMP opinion are. And it makes no forecast it
-cannot support: a 1–10 score presented as a probability is a calibration claim,
-and calibration is the hardest thing in this field to get right and the easiest
-to assert.
+| | Danelfin | This platform |
+|---|---|---|
+| Universe | US stocks, 5,500+ European stocks since the February 2026 expansion, plus US-listed ETFs | **229 symbols**, whichever you seed |
+| Sector focus | General market | Pharma/life sciences, AI, data storage — with a clinical-stage cohort |
+| Track record | Published since 2017. Score 10 stocks +21.05% annualised alpha at 3 months, score 1 −33.28%; a strategy return of +376% from Jan 2017 to Jun 2025 against the S&P 500; European V3.0 +35.40% annualised alpha | `GET /scores/validation` on **your** data: several start dates, each pillar separately, with its caveats attached |
+| Nature of that record | Backtested, per the vendor's own materials | Backtested, point-in-time, on one universe over a limited window |
+| Cost | Subscription | Infrastructure and data-API fees |
 
-**What the validation actually said on first use.** Over one 21-day window
-from 2026-07-11 the top quintile returned −6.4% against the bottom quintile's
-−2.6%: the ranking was *inverted*, and every quintile was negative. That is
-one falling month, and a trend-following score is exactly what suffers in a
-reversal — but a single period cannot distinguish "the score is wrong" from
-"that month went against it", which is why the endpoint now tests several
-start dates and reports each pillar separately. Take the number the endpoint
-gives you over anything claimed here.
+### Where Danelfin is straightforwardly better
 
-**The honest summary.** If you want a researched, validated score across a
-large universe, buy one. What this gives you is a score you can take apart,
-over a universe you chose, on data you own — and a validation endpoint that
-will tell you when it is not working.
+Three orders of magnitude more inputs, and machine-learned weights across them
+will capture interactions that eleven hand-weighted factors cannot. A universe
+roughly twenty times larger. A track record spanning eight years rather than a
+few months, published and externally visible. Fundamental coverage across the
+whole universe rather than the US-listed subset a free vendor tier reaches.
+
+### Where this is better, and it is not nothing
+
+**The score is auditable rather than explained.** Not "here are the top
+features" but the entire arithmetic, reproducible by hand from the response.
+
+**The weights were measured, and the measurement was allowed to say no.** The
+fundamental pillar shipped carrying zero weight until it was validated. The
+sentiment pillar had been given 0.4 on the reasonable assumption that news
+matters, and when twelve periods failed to support it, its weight was cut
+rather than defended. A machine-learned model cannot make that kind of
+commitment legible.
+
+**It is tuned to a sector.** The lexicon knows a complete response letter, a
+CHMP positive opinion and a Form 483 — and knows that a *shortage* is a supply
+failure for a drugmaker and pricing power for a memory maker.
+
+**It makes no forecast it cannot support.** A 1–10 score presented as a
+probability of beating the market is a calibration claim, and calibration is
+the hardest thing in this field to get right and the easiest to assert. This
+one ranks and says so.
+
+**Validation runs on your data, not the vendor's.** A published track record
+tells you how a model did on the vendor's universe over the vendor's window.
+`/scores/validation` tells you whether it is separating anything on the symbols
+you actually hold, and will report that it is not.
+
+### The honest summary
+
+If you want a researched score across a large universe with a long published
+record, buy one — that is a different product and this does not replace it.
+What this gives you is a score you can take apart, over a universe you chose,
+on data you own, with a validation endpoint that will tell you when it stops
+working.
 
 ## What I would do next, in order
 
