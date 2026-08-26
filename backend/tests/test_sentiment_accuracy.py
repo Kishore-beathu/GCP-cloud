@@ -9,8 +9,15 @@ from __future__ import annotations
 
 import pytest
 
-from tests.corpus import NEGATIVE, NEUTRAL, POSITIVE, SUBSTRING_TRAPS, all_labelled
-from app.services.sentiment import LexiconAnalyzer
+from tests.corpus import (
+    NEGATIVE,
+    NEUTRAL,
+    POSITIVE,
+    SECTOR_CASES,
+    SUBSTRING_TRAPS,
+    all_labelled,
+)
+from app.services.sentiment import LexiconAnalyzer, overlay_key
 
 analyzer = LexiconAnalyzer()
 
@@ -101,3 +108,43 @@ def test_explain_reports_the_terms_that_fired() -> None:
 def test_empty_input_is_neutral() -> None:
     assert analyzer.score("").sentiment.value == "neutral"
     assert analyzer.score("   ").sentiment.value == "neutral"
+
+
+# --- Beyond pharma ------------------------------------------------------------
+# Five terms have been found meaning one thing in a filing and another in a
+# release note — loss, trial, upgrade, recall, probe. Each silently corrupted
+# scores until it was noticed on the dashboard, and none was caught here,
+# because the corpus contained no headline that could catch it.
+
+
+@pytest.mark.parametrize("headline,expected,sector", SECTOR_CASES)
+def test_sector_headlines_are_scored_correctly(
+    headline: str, expected: str, sector: str
+) -> None:
+    """Scored through the overlay the symbol would actually arrive under.
+
+    A memory maker's "shortage" read with the pharma lexicon measures the
+    wrong thing, so the sector travels with the case.
+    """
+    key = overlay_key(sector)
+    label = analyzer.score(headline, None, key).sentiment.value
+
+    assert label == expected, analyzer.explain(headline, None, key)
+
+
+def test_the_whole_corpus_including_sector_cases_stays_accurate() -> None:
+    """One ratchet over everything, so a sector fix cannot regress pharma."""
+    cases = [(h, e, None) for h, e in all_labelled()]
+    cases += [(h, e, overlay_key(s)) for h, e, s in SECTOR_CASES]
+
+    correct = sum(
+        1
+        for headline, expected, key in cases
+        if analyzer.score(headline, None, key).sentiment.value == expected
+    )
+    accuracy = correct / len(cases)
+
+    assert accuracy >= 0.95, (
+        f"Lexicon accuracy dropped to {accuracy:.0%} on {len(cases)} labelled "
+        "headlines. Fix the lexicon rather than lowering this threshold."
+    )

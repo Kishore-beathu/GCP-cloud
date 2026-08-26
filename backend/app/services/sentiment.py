@@ -152,7 +152,13 @@ _NEGATIVE_TERMS: dict[str, float] = {
     r"consent decree": 0.9,
     r"import alert": 0.85,
     r"clinical hold": 1.0,
-    r"recall\w*": 1.0,
+    # A product recall, not Microsoft's Recall feature. The bare stem read
+    # "brings Recall feature to more Copilot PCs" as maximally negative. Verb
+    # inflections and the noun phrases a real recall uses; the bare noun is
+    # left out because that is the form a product name takes.
+    r"recall(?:s|ed|ing)\b": 1.0,
+    r"(?:voluntary|product|safety|class [i1]) recall": 1.0,
+    r"recall (?:of|notice)": 1.0,
     r"withdraw\w*": 0.8,
     r"negative opinion": 1.0,
     # --- Clinical failures --------------------------------------------------
@@ -192,7 +198,14 @@ _NEGATIVE_TERMS: dict[str, float] = {
     r"lawsuit": 0.7,
     r"litigation": 0.6,
     r"investigation": 0.7,
-    r"probe": 0.6,
+    # An investigation, not a probe card. Advantest and KLA are in this
+    # universe precisely because they make semiconductor test equipment, and
+    # "ships new probe card for HBM4 test" scored maximally negative.
+    r"(?:regulatory|antitrust|criminal|federal|doj|sec|ftc|government) probe": 0.7,
+    r"probe (?:into|of)\b": 0.7,
+    r"probes? the\b": 0.6,
+    r"under (?:a |an )?probe": 0.7,
+    r"(?:launch\w*|open\w*|widen\w*) (?:a |an )?probe": 0.7,
     r"layoffs?": 0.7,
     r"restructuring": 0.5,
     r"bankruptcy": 1.0,
@@ -287,6 +300,9 @@ _SCARCITY_AS_STRENGTH: dict[str, float] = {
     r"shortage": 0.8,
     r"crunch": 0.7,
     r"(?:tight|tightening) supply": 0.8,
+    # The same fact with the noun first. Caught by the sector corpus on its
+    # first run, which is the point of having one.
+    r"supply (?:remains|stays|is|has remained) tight": 0.8,
     r"supply constrain\w*": 0.7,
     r"allocation": 0.6,
     r"undersupply": 0.85,
@@ -568,7 +584,7 @@ def _is_negated(text: str, match_start: int) -> bool:
 class LexiconAnalyzer:
     """Keyword scorer tuned for pharma and life-sciences headlines."""
 
-    model_version = "lexicon-v7"
+    model_version = "lexicon-v8"
 
     @staticmethod
     def _tally(text: str, lexicon_key: str | None = None) -> tuple[float, float, int]:
