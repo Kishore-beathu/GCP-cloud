@@ -6,6 +6,28 @@ financial sentiment and business event type (FDA approvals, trial results,
 M&A, recalls, …), fires configurable alerts, streams live updates to clients,
 and backtests how news historically moved prices.
 
+## Running it locally
+
+```powershell
+.\scripts\start.ps1
+```
+
+Starts the backend and the dashboard together and prints the URLs. It picks a
+port that will actually bind rather than assuming 8000 is free, and tells the
+frontend which one it chose, because the two ways that port gets lost look
+nothing alike from the browser: a half-dead process still owns the listening
+socket, so connections are accepted and never answered — which reads as a hang
+rather than a refusal — while a Windows reserved range (Hyper-V, WSL, Docker)
+leaves the port unbindable and unowned, so there is nothing to kill.
+
+It also waits for the API to answer before reporting success. Startup seeds the
+universe and starts the scheduler, so "the process is running" and "the API is
+serving" are several seconds apart, and that gap is what a frontend stuck on
+"Connecting…" is usually showing.
+
+To run the two halves by hand instead, see [`backend/README.md`](backend/README.md)
+and [`frontend/README.md`](frontend/README.md).
+
 ## Repository layout
 
 | Path | Contents |
