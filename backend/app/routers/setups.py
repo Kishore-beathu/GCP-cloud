@@ -131,6 +131,41 @@ async def scan(
             detail=f"Unknown setup {setup!r}. Try one of {sorted(setups.SETUPS)}.",
         )
 
+    return await run_scan(
+        db,
+        symbols,
+        setup=setup,
+        account_equity=account_equity,
+        risk_fraction=risk_fraction,
+        include_failed=include_failed,
+        include_stale=include_stale,
+        include_delayed=include_delayed,
+        tz=tz,
+        max_bar_age_minutes=max_bar_age_minutes,
+    )
+
+
+async def run_scan(
+    db: AsyncSession,
+    symbols: list[str],
+    *,
+    setup: str | None = None,
+    account_equity: float | None = None,
+    risk_fraction: float = setups.DEFAULT_RISK_FRACTION,
+    include_failed: bool = False,
+    include_stale: bool = False,
+    include_delayed: bool = False,
+    tz: str = "UTC",
+    max_bar_age_minutes: float = ACTIONABLE_BAR_AGE_MINUTES,
+) -> dict:
+    """Scan resolved symbols and report what fired.
+
+    Extracted from the endpoint so a second caller gets the scanner's actual
+    rules rather than a second implementation of them. Staleness, feed delay
+    and bar age all decide whether a signal is real, and a caller that
+    reimplemented any of the three would quietly disagree with /setups about
+    which trades exist.
+    """
     delayed = [symbol for symbol in symbols if not is_realtime(symbol)]
     if not include_delayed:
         symbols = [symbol for symbol in symbols if is_realtime(symbol)]

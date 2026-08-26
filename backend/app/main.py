@@ -27,6 +27,7 @@ from app.routers import (
     portfolios,
     scores,
     setups,
+    shortlist,
     stocks,
     system,
     ws,
@@ -120,6 +121,7 @@ def create_app() -> FastAPI:
     app.include_router(fundamentals.router, dependencies=[Depends(require_auth)])
     app.include_router(scores.router, dependencies=[Depends(require_auth)])
     app.include_router(setups.router, dependencies=[Depends(require_auth)])
+    app.include_router(shortlist.router, dependencies=[Depends(require_auth)])
     app.include_router(portfolios.router, dependencies=[Depends(require_auth)])
     # The WebSocket authenticates in its handshake: browsers cannot set headers.
     app.include_router(ws.router)
