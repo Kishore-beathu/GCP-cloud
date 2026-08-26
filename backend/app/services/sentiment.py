@@ -110,7 +110,17 @@ _POSITIVE_TERMS: dict[str, float] = {
     r"record": 0.5,
     r"growth": 0.55,
     r"profit\w*": 0.6,
-    r"upgrad\w*": 0.9,
+    # An *analyst* upgrade, which is a real catalyst. The bare stem also
+    # matched a *product* upgrade, and this universe holds Meta, Microsoft,
+    # Adobe and Salesforce: "Upgrades Two-Step Security Verification To Full
+    # Password" scored maximally positive on the word alone. Rating context is
+    # required rather than assumed. Downgrade needs no such guard — nobody
+    # announces downgrading their own product.
+    r"upgrad(?:e|es|ed|ing)? (?:\w+ ){0,3}?to (?:a )?(?:buy|outperform|"
+    r"overweight|strong buy|market perform|hold|neutral|equal[- ]?weight)": 0.95,
+    r"(?:analyst|broker|rating|price target)\w* upgrad\w*": 0.9,
+    r"upgrad(?:es|ed) (?:the )?(?:stock|shares|rating|target)": 0.9,
+    r"upgraded by": 0.9,
     r"outperform\w*": 0.8,
     r"(?:share )?(?:buyback|repurchase)": 0.8,
     r"(?:rais\w*|increas\w*) (?:the )?dividend": 0.8,
@@ -558,7 +568,7 @@ def _is_negated(text: str, match_start: int) -> bool:
 class LexiconAnalyzer:
     """Keyword scorer tuned for pharma and life-sciences headlines."""
 
-    model_version = "lexicon-v6"
+    model_version = "lexicon-v7"
 
     @staticmethod
     def _tally(text: str, lexicon_key: str | None = None) -> tuple[float, float, int]:

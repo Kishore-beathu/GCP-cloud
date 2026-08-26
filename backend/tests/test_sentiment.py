@@ -380,3 +380,51 @@ def test_real_clinical_trials_still_classify(headline):
     assert (
         analyzer.classify_event_type(headline).primary_event == EventType.CLINICAL_TRIAL
     )
+
+
+# --- "Upgrade" means two different things too ---------------------------------
+
+
+@pytest.mark.parametrize(
+    "headline",
+    [
+        "Meta Platforms Rolls Out New Account Security Features; Upgrades Two-Step Verification",
+        "Company upgrades its manufacturing facility",
+        "Vendor upgrades the platform to version 4",
+    ],
+)
+def test_a_product_upgrade_is_not_an_analyst_upgrade(headline):
+    """The lexicon means a rating change; software companies mean a release.
+
+    "Upgrades Two-Step Security Verification To Full Password" scored
+    maximally positive on the stem alone — routine product news read as a
+    broker raising its rating, on a universe that holds Meta, Microsoft,
+    Adobe and Salesforce.
+    """
+    analyzer = LexiconAnalyzer()
+
+    assert analyzer.score(headline).score == 0.0
+
+
+@pytest.mark.parametrize(
+    "headline",
+    [
+        "Morgan Stanley upgrades Pfizer to Overweight",
+        "Analyst upgrades the stock on pipeline strength",
+        "Shares upgraded by Goldman Sachs",
+        "Jefferies upgrades shares to Buy from Hold",
+        "Rating upgrade follows a strong quarter",
+    ],
+)
+def test_a_real_analyst_upgrade_still_fires(headline):
+    """Requiring context must not cost the term the cases it exists for."""
+    analyzer = LexiconAnalyzer()
+
+    assert analyzer.score(headline).score > 0
+
+
+def test_downgrade_needs_no_such_guard():
+    """Nobody announces downgrading their own product."""
+    analyzer = LexiconAnalyzer()
+
+    assert analyzer.score("Analysts downgrade the stock after the miss").score < 0
