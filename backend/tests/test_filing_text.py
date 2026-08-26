@@ -362,3 +362,130 @@ class _Resp:
 
 async def _response(text: str):
     return _Resp(text)
+
+
+def _refusal(status: int):
+    """A response that fails ``raise_for_status`` the way httpx really does.
+
+    The status code has to survive into the report, so a hand-rolled stub that
+    raises a bare exception would not exercise the thing under test.
+    """
+    import httpx
+
+    request = httpx.Request("GET", "https://www.sec.gov/x")
+    response = httpx.Response(status, request=request)
+
+    async def _get(self, url, **kwargs):
+        raise httpx.HTTPStatusError("refused", request=request, response=response)
+
+    return _get
+
+
+async def _seed_filings(db, stock, count: int) -> None:
+    from app.models import NewsArticle
+
+    for index in range(count):
+        db.add(
+            NewsArticle(
+                ticker_id=stock.id,
+                headline="Co filed 8-K: Other Events",
+                body="Form 8-K filed 2026-08-20 (Current report).",
+                source="sec_edgar",
+                url=f"https://www.sec.gov/Archives/edgar/data/1/{index}/form8k.htm",
+                published_at=datetime.now(timezone.utc),
+            )
+        )
+    await db.commit()
+
+
+@pytest.mark.asyncio
+async def test_a_refused_batch_reports_which_status_refused_it(
+    db, seeded_stocks, monkeypatch
+):
+    """"unreachable: 499" is a count, not a diagnosis.
+
+    The first real run came back with every filing unreachable and no way to
+    tell a rate limit from a rejected user agent — which are opposite fixes.
+    """
+    import httpx
+
+    from app.services import rescore
+
+    monkeypatch.setattr(rescore, "SEC_REQUEST_DELAY_SECONDS", 0.0)
+    await _seed_filings(db, seeded_stocks[0], 3)
+    monkeypatch.setattr(httpx.AsyncClient, "get", _refusal(429))
+
+    report = await rescore.backfill_filing_text(db)
+
+    assert report.unreachable == 3
+    assert report.failures == {"HTTP 429": 3}
+
+
+@pytest.mark.asyncio
+async def test_the_backfill_stops_rather_than_hammering_a_source_refusing_it(
+    db, seeded_stocks, monkeypatch
+):
+    """Ten refusals in a row is being blocked, not ten bad documents.
+
+    Sending the remaining hundreds anyway is what turns a rate limit into a
+    ban, and it produces no information the first ten did not already give.
+    """
+    import httpx
+
+    from app.services import rescore
+
+    monkeypatch.setattr(rescore, "SEC_REQUEST_DELAY_SECONDS", 0.0)
+    await _seed_filings(db, seeded_stocks[0], rescore.MAX_CONSECUTIVE_FAILURES + 15)
+
+    attempts = 0
+    refuse = _refusal(403)
+
+    async def _counting_get(self, url, **kwargs):
+        nonlocal attempts
+        attempts += 1
+        return await refuse(self, url, **kwargs)
+
+    monkeypatch.setattr(httpx.AsyncClient, "get", _counting_get)
+
+    report = await rescore.backfill_filing_text(db)
+
+    assert attempts == rescore.MAX_CONSECUTIVE_FAILURES
+    assert report.stopped_early is not None
+    assert "15 filings untried" in report.stopped_early
+    assert report.failures == {"HTTP 403": rescore.MAX_CONSECUTIVE_FAILURES}
+
+
+@pytest.mark.asyncio
+async def test_an_intermittent_failure_does_not_stop_the_run(
+    db, seeded_stocks, monkeypatch
+):
+    """The counter is consecutive failures, not total ones.
+
+    Filings are malformed often enough that a total-failure cap would abandon
+    a healthy run partway through.
+    """
+    import httpx
+
+    from app.services import rescore
+
+    monkeypatch.setattr(rescore, "SEC_REQUEST_DELAY_SECONDS", 0.0)
+    await _seed_filings(db, seeded_stocks[0], 12)
+
+    calls = 0
+    refuse = _refusal(404)
+
+    async def _every_other(self, url, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls % 2:
+            return await refuse(self, url, **kwargs)
+        return _Resp(_filing())
+
+    monkeypatch.setattr(httpx.AsyncClient, "get", _every_other)
+
+    report = await rescore.backfill_filing_text(db)
+
+    assert calls == 12
+    assert report.stopped_early is None
+    assert report.unreachable == 6
+    assert report.fetched == 6

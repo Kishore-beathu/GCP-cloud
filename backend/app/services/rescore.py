@@ -12,6 +12,7 @@ channel would be worse than useless.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass, field
 
@@ -313,6 +314,10 @@ class FilingTextReport:
     rescored: int = 0
     no_narrative: int = 0
     unreachable: int = 0
+    # Why the unreachable ones were unreachable, by HTTP status or exception
+    # name. "unreachable: 499" is not a diagnosis; "403 x 499" is.
+    failures: dict[str, int] = field(default_factory=dict)
+    stopped_early: str | None = None
     samples: list[dict] = field(default_factory=list)
 
     def as_dict(self) -> dict:
@@ -325,6 +330,8 @@ class FilingTextReport:
             # a pointer to an exhibit, or a different item entirely.
             "no_narrative": self.no_narrative,
             "unreachable": self.unreachable,
+            "failures": self.failures,
+            "stopped_early": self.stopped_early,
             "samples": self.samples,
         }
 
@@ -333,6 +340,18 @@ class FilingTextReport:
 # sometimes a one-line vendor description. A body longer than this already has
 # a narrative in it and does not need fetching again.
 METADATA_BODY_CHARS = 400
+
+# The SEC asks for no more than ten requests a second and enforces it. Every
+# other SEC path here paces itself; this one did not, and a first run of 499
+# filings came back with 499 failures — the whole batch refused after the
+# opening burst.
+SEC_REQUEST_DELAY_SECONDS = 0.15
+
+# Give up after this many consecutive failures. Being refused once is a bad
+# document; being refused ten times in a row is being blocked, and continuing
+# to send four hundred more requests at a regulator that has just said no is
+# how an IP stops being welcome.
+MAX_CONSECUTIVE_FAILURES = 10
 
 
 async def backfill_filing_text(
@@ -384,16 +403,39 @@ async def backfill_filing_text(
     if not candidates:
         return report
 
+    consecutive = 0
     async with httpx.AsyncClient() as client:
-        for article, sector in candidates:
+        for index, (article, sector) in enumerate(candidates):
+            if index:
+                await asyncio.sleep(SEC_REQUEST_DELAY_SECONDS)
+            # Name the failure rather than only counting it. A status code
+            # says which of the two likely causes it is; an exception name
+            # separates a timeout from a refused connection.
+            failure: str | None = None
             try:
                 response = await client.get(
                     article.url, headers=_headers(), timeout=30.0
                 )
                 response.raise_for_status()
-            except httpx.HTTPError:
+            except httpx.HTTPStatusError as exc:
+                failure = f"HTTP {exc.response.status_code}"
+            except httpx.HTTPError as exc:
+                failure = type(exc).__name__
+
+            if failure is not None:
                 report.unreachable += 1
+                report.failures[failure] = report.failures.get(failure, 0) + 1
+                consecutive += 1
+                if consecutive >= MAX_CONSECUTIVE_FAILURES:
+                    report.stopped_early = (
+                        f"{consecutive} consecutive failures, stopped with "
+                        f"{len(candidates) - index - 1} filings untried. An "
+                        "HTTP 403 here means SEC_USER_AGENT is missing a "
+                        "contact address; a 429 means the batch was too fast."
+                    )
+                    break
                 continue
+            consecutive = 0
 
             report.fetched += 1
             try:
