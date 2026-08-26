@@ -413,7 +413,10 @@ async def backfill_filing_text(
         return report
 
     consecutive = 0
-    async with httpx.AsyncClient() as client:
+    # follow_redirects matches the ingest client. Without it EDGAR's
+    # redirects arrive as 301s, raise_for_status turns them into failures, and
+    # a document that is perfectly reachable is recorded as unreachable.
+    async with httpx.AsyncClient(follow_redirects=True) as client:
         for index, (article, sector) in enumerate(candidates):
             if index:
                 await asyncio.sleep(SEC_REQUEST_DELAY_SECONDS)
