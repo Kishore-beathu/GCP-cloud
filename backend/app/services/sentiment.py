@@ -459,7 +459,16 @@ _EVENT_PATTERNS: dict[EventType, tuple[str, ...]] = {
         r"\blabel expansion\b", r"\bregulatory\b",
     ),
     EventType.CLINICAL_TRIAL: (
-        r"\bphase (?:1|2|3|i{1,3})\b", r"\btrial\b", r"\bstudy\b", r"\bendpoint\b",
+        r"\bphase (?:1|2|3|i{1,3})\b",
+        # A bare "trial" is not a clinical trial. This universe covers Meta,
+        # Alphabet and Amazon as well as Pfizer, and "Meta Could Pay Billions
+        # To End Teen Addiction Trial" was filed as a clinical trial on that
+        # word alone. Qualified forms only — the unqualified sense is settled
+        # by the other patterns here, since a genuine readout almost always
+        # also says endpoint, topline, or a phase.
+        r"\b(?:clinical|pivotal|registrational|randomi[sz]ed|efficacy|safety) trial\b",
+        r"\btrial (?:results?|data|readout|met|failed)\b",
+        r"\bstudy\b", r"\bendpoint\b",
         r"\btopline\b", r"\benrolment\b", r"\benrollment\b", r"\bcohort\b",
     ),
     EventType.REVENUE: (
@@ -479,6 +488,11 @@ _EVENT_PATTERNS: dict[EventType, tuple[str, ...]] = {
     EventType.LITIGATION: (
         r"\blawsuit\b", r"\blitigation\b", r"\bpatent (?:dispute|infringement|win)\b",
         r"\bcourt\b", r"\bsettlement\b", r"\bappeal\b",
+        # The vocabulary of a legal proceeding, which the tech half of this
+        # universe generates far more of than the pharma half.
+        r"\bsettl(?:es|ed|ing)\b", r"\bjury\b", r"\bverdict\b",
+        r"\bclass action\b", r"\bantitrust\b", r"\bdamages\b",
+        r"\bsu(?:es|ed|ing)\b", r"\bplaintiffs?\b", r"\ballegations?\b",
     ),
     EventType.RECALL: (
         r"\brecall", r"\bwarning letter\b", r"\bform 483\b", r"\bconsent decree\b",
@@ -544,7 +558,7 @@ def _is_negated(text: str, match_start: int) -> bool:
 class LexiconAnalyzer:
     """Keyword scorer tuned for pharma and life-sciences headlines."""
 
-    model_version = "lexicon-v5"
+    model_version = "lexicon-v6"
 
     @staticmethod
     def _tally(text: str, lexicon_key: str | None = None) -> tuple[float, float, int]:

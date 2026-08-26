@@ -327,3 +327,56 @@ def test_a_financial_loss_still_counts(headline):
     analyzer = LexiconAnalyzer()
 
     assert analyzer.score(headline).score < 0
+
+
+# --- "Trial" means two different things in this universe ----------------------
+
+
+def test_a_courtroom_trial_is_not_a_clinical_one():
+    """The universe covers Meta and Alphabet as well as Pfizer.
+
+    A bare "trial" matched the clinical-trial pattern on the word alone, so
+    "Meta Could Pay Billions To End Teen Addiction Trial" was filed as a
+    clinical trial — and event_type is what the backtest groups price impact
+    by, so litigation outcomes were being averaged into trial readouts.
+    """
+    analyzer = SentimentAnalyzer(backend="lexicon")
+
+    result = analyzer.classify_event_type(
+        "Meta Could Pay Billions To End Teen Addiction Trial"
+    )
+
+    assert result.primary_event != EventType.CLINICAL_TRIAL
+
+
+@pytest.mark.parametrize(
+    "headline",
+    [
+        "Meta, states discuss mid-trial settlement in teen addiction case",
+        "Meta talking with states to settle landmark lawsuit",
+        "Jury returns verdict against the company",
+        "Class action alleges antitrust violations",
+    ],
+)
+def test_legal_proceedings_classify_as_litigation(headline):
+    analyzer = SentimentAnalyzer(backend="lexicon")
+
+    assert analyzer.classify_event_type(headline).primary_event == EventType.LITIGATION
+
+
+@pytest.mark.parametrize(
+    "headline",
+    [
+        "Phase 3 trial met its primary endpoint",
+        "Company announces positive topline results from pivotal trial",
+        "Enrollment complete in the clinical trial",
+        "The trial failed to show a survival benefit",
+    ],
+)
+def test_real_clinical_trials_still_classify(headline):
+    """Narrowing the pattern must not cost it the cases it exists for."""
+    analyzer = SentimentAnalyzer(backend="lexicon")
+
+    assert (
+        analyzer.classify_event_type(headline).primary_event == EventType.CLINICAL_TRIAL
+    )
