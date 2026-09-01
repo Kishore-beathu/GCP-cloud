@@ -146,6 +146,74 @@ async def test_update_without_a_key_is_a_no_op(db, seeded_stocks, monkeypatch):
             "inserted": 0,
             "updated": 0,
             "uncovered": 0,
+            "not_in_plan": 0,
         }
+    finally:
+        get_settings.cache_clear()
+
+
+@pytest.mark.asyncio
+async def test_a_symbol_outside_the_plan_does_not_abandon_the_rest(
+    db, seeded_stocks, monkeypatch
+):
+    """A 403 on one listing must not cancel every symbol behind it.
+
+    Finnhub answers 403 both for a bad key and for a symbol outside the plan.
+    Treating them alike stopped the whole batch on the first non-US ticker —
+    and the batch is ordered by ticker, so that was 000660.KS, ahead of every
+    US symbol in the universe. A real run reported inserted 0, updated 0,
+    uncovered 0: nothing was even attempted after the first name.
+    """
+    import httpx
+
+    from app.integrations import finnhub
+
+    from app.models import Stock
+
+    # A Korean listing, added because the real universe has them and the
+    # fixture does not. The ticker matters: the batch is ordered by ticker and
+    # a leading digit sorts ahead of every US symbol, which is precisely why
+    # this refusal reached the front of the queue in production.
+    db.add(
+        Stock(ticker="000660.KS", company_name="SK hynix", sector="memory")
+    )
+    await db.commit()
+
+    monkeypatch.setenv("FINNHUB_API_KEY", "test-key")
+    get_settings.cache_clear()
+    monkeypatch.setattr(finnhub, "REQUEST_DELAY_SECONDS", 0.0)
+
+    asked: list[str] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        symbol = request.url.params.get("symbol", "")
+        asked.append(symbol)
+        if "." in symbol:  # a foreign listing, outside the free plan
+            return httpx.Response(
+                403, json={"error": "You don't have access to this resource."}
+            )
+        return httpx.Response(
+            200,
+            json={"c": 101.0, "d": 1.0, "dp": 1.0, "h": 102.0, "l": 99.0,
+                  "o": 100.0, "pc": 100.0, "t": 1756000000},
+        )
+
+    transport = httpx.MockTransport(handler)
+    real_client = httpx.AsyncClient
+
+    def _client(*args, **kwargs):
+        kwargs["transport"] = transport
+        return real_client(*args, **kwargs)
+
+    monkeypatch.setattr(finnhub.httpx, "AsyncClient", _client)
+
+    tickers = [s.ticker for s in seeded_stocks] + ["000660.KS"]
+    totals = await finnhub.update_finnhub_quotes(db, tickers)
+
+    try:
+        assert len(asked) == len(tickers), (
+            f"only {len(asked)} of {len(tickers)} symbols were attempted: {asked}"
+        )
+        assert totals["inserted"] + totals["updated"] > 0
     finally:
         get_settings.cache_clear()

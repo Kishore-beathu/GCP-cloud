@@ -34,6 +34,17 @@ class FinnhubRateLimited(Exception):
     """Raised when Finnhub answers 429; the current batch should stop."""
 
 
+class FinnhubNotCovered(Exception):
+    """One symbol or endpoint is outside the plan, rather than the key being bad.
+
+    Finnhub answers 403 for both "your key is not valid here" and "this symbol
+    is not in your plan", and the second is per-symbol. Treating them alike
+    stopped the whole quote batch on the first non-US ticker — and because the
+    batch is ordered by ticker, that was 000660.KS, the first symbol of all.
+    Every US quote after it was abandoned before being asked for.
+    """
+
+
 class FinnhubRejected(Exception):
     """Raised on 401/403: a bad key, or an endpoint the plan does not include.
 
@@ -89,13 +100,15 @@ async def fetch_company_news(
         )
         if response.status_code == 429:
             raise FinnhubRateLimited(ticker)
-        if response.status_code in (401, 403):
+        if response.status_code == 403:
+            raise FinnhubNotCovered(f"{ticker}: {response.text[:120]}")
+        if response.status_code == 401:
             raise FinnhubRejected(
                 f"HTTP {response.status_code} for {ticker}: {response.text[:200]}"
             )
         response.raise_for_status()
         payload = response.json()
-    except (FinnhubRateLimited, FinnhubRejected):
+    except (FinnhubRateLimited, FinnhubRejected, FinnhubNotCovered):
         raise
     except (httpx.HTTPError, ValueError) as exc:
         logger.warning("Finnhub request failed for %s: %s", ticker, exc)
@@ -219,13 +232,15 @@ async def fetch_quote(
         )
         if response.status_code == 429:
             raise FinnhubRateLimited(ticker)
-        if response.status_code in (401, 403):
+        if response.status_code == 403:
+            raise FinnhubNotCovered(f"{ticker}: {response.text[:120]}")
+        if response.status_code == 401:
             raise FinnhubRejected(
                 f"HTTP {response.status_code} for {ticker}: {response.text[:200]}"
             )
         response.raise_for_status()
         payload = response.json()
-    except (FinnhubRateLimited, FinnhubRejected):
+    except (FinnhubRateLimited, FinnhubRejected, FinnhubNotCovered):
         raise
     except (httpx.HTTPError, ValueError) as exc:
         logger.warning("Finnhub quote failed for %s: %s", ticker, exc)
@@ -241,7 +256,11 @@ async def update_finnhub_quotes(
 ) -> dict[str, int]:
     """Refresh the latest price for the given tickers (default: all active)."""
     settings = get_settings()
-    totals = {"inserted": 0, "updated": 0, "uncovered": 0}
+    # "uncovered" is a symbol the vendor knows but has no quote for today;
+    # "not_in_plan" is one it refuses to answer for at all. Separate counters
+    # because the first is normal and the second says the universe has outgrown
+    # the subscription.
+    totals = {"inserted": 0, "updated": 0, "uncovered": 0, "not_in_plan": 0}
     if not settings.finnhub_api_key:
         logger.info("Finnhub quote refresh skipped: FINNHUB_API_KEY is not set")
         return totals
@@ -258,6 +277,14 @@ async def update_finnhub_quotes(
             except FinnhubRateLimited:
                 logger.warning("Finnhub rate limit hit at %s; keeping what we have", stock.ticker)
                 break
+            except FinnhubNotCovered:
+                # One symbol outside the plan is not a reason to abandon the
+                # rest. Ordered by ticker, the non-US names sort first, so
+                # aborting here skipped every US quote in the universe.
+                totals["not_in_plan"] += 1
+                if index < len(stocks) - 1:
+                    await asyncio.sleep(REQUEST_DELAY_SECONDS)
+                continue
             except FinnhubRejected as exc:
                 logger.error("Finnhub rejected the quote request, stopping: %s", exc)
                 break
@@ -271,6 +298,18 @@ async def update_finnhub_quotes(
 
             if index < len(stocks) - 1:
                 await asyncio.sleep(REQUEST_DELAY_SECONDS)
+
+    if totals["not_in_plan"] and not (totals["inserted"] or totals["updated"]):
+        logger.warning(
+            "Finnhub returned no quotes: all %d attempted symbols were refused. "
+            "That reads as a plan or key problem rather than symbol coverage.",
+            totals["not_in_plan"],
+        )
+    elif totals["not_in_plan"]:
+        logger.info(
+            "Finnhub: %d symbols are outside the plan and were skipped",
+            totals["not_in_plan"],
+        )
 
     logger.info("Finnhub quote refresh complete: %s", totals)
     return totals
@@ -295,13 +334,15 @@ async def _get(
         response = await client.get(f"{BASE_URL}{path}", params=params, timeout=30.0)
         if response.status_code == 429:
             raise FinnhubRateLimited(label)
-        if response.status_code in (401, 403):
+        if response.status_code == 403:
+            raise FinnhubNotCovered(f"{label}: {response.text[:120]}")
+        if response.status_code == 401:
             raise FinnhubRejected(
                 f"HTTP {response.status_code} for {label}: {response.text[:200]}"
             )
         response.raise_for_status()
         return response.json()
-    except (FinnhubRateLimited, FinnhubRejected):
+    except (FinnhubRateLimited, FinnhubRejected, FinnhubNotCovered):
         raise
     except (httpx.HTTPError, ValueError) as exc:
         logger.warning("Finnhub request failed for %s: %s", label, exc)

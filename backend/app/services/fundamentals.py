@@ -34,6 +34,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import get_settings
 from app.integrations.finnhub import (
     FinnhubRateLimited,
+    FinnhubNotCovered,
     FinnhubRejected,
     fetch_earnings,
     fetch_metrics,
@@ -124,6 +125,16 @@ async def ingest_fundamentals(
         for index, stock in enumerate(stocks):
             try:
                 covered = await _refresh_one(db, client, stock, settings.finnhub_api_key, report)
+            except FinnhubNotCovered:
+                # The symbol is outside the plan. That is an ordinary gap in a
+                # universe that spans Seoul and Hong Kong, not a reason to
+                # abandon the remaining symbols.
+                report.uncovered.append(stock.ticker)
+                if index < len(stocks) - 1:
+                    import asyncio
+
+                    await asyncio.sleep(REQUEST_DELAY_SECONDS)
+                continue
             except FinnhubRejected as exc:
                 # About the account, not the symbol: every later call fails too.
                 # Say which, because "refused" on a Korean listing reads as a

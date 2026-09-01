@@ -35,6 +35,7 @@ from app.config import get_settings
 from app.integrations.clinical import CLINICAL_TRIALS_URL
 from app.integrations.finnhub import (
     FinnhubRateLimited,
+    FinnhubNotCovered,
     FinnhubRejected,
     fetch_earnings_calendar,
 )
@@ -102,7 +103,7 @@ async def refresh_calendar(
     if settings.finnhub_api_key:
         try:
             fresh.extend(await _earnings_events(by_symbol, settings.finnhub_api_key, now, until))
-        except (FinnhubRejected, FinnhubRateLimited) as exc:
+        except (FinnhubRejected, FinnhubRateLimited, FinnhubNotCovered) as exc:
             report.sources_failed.append("finnhub_earnings_calendar")
             logger.warning("Earnings calendar unavailable: %s", exc)
     else:
