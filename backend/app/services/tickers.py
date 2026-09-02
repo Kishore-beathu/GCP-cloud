@@ -345,12 +345,12 @@ SEED_TICKERS: tuple[TickerSeed, ...] = (
     # the NAND and controller layer that moves with them.
     TickerSeed("2344.TW", "Winbond Electronics Corp.", "memory"),
     TickerSeed("2337.TW", "Macronix International", "memory"),
-    TickerSeed("8299.TW", "Phison Electronics Corp.", "memory"),
+    TickerSeed("8299.TWO", "Phison Electronics Corp.", "memory"),
     TickerSeed("SIMO", "Silicon Motion Technology (ADR)", "memory", "NASDAQ"),
     # Module makers. They buy DRAM and NAND wafers and sell finished modules,
     # so their margin moves inversely to the spot price the fabs above earn on
     # it — the cohort had every seller of memory and no buyer of it.
-    TickerSeed("3260.TW", "ADATA Technology Co. Ltd.", "memory"),
+    TickerSeed("3260.TWO", "ADATA Technology Co. Ltd.", "memory"),
     TickerSeed("2451.TW", "Transcend Information Inc.", "memory"),
     TickerSeed("RMBS", "Rambus Inc.", "memory", "NASDAQ"),
     TickerSeed("NLST", "Netlist Inc.", "memory", "NASDAQ"),

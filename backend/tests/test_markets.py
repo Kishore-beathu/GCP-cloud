@@ -157,3 +157,35 @@ def test_session_state_counts_down_to_the_close_while_open():
     assert state["is_open"] is True
     # Four hours to the 16:00 close.
     assert state["minutes_until_change"] == 240
+
+
+def test_the_taipei_exchange_is_not_shadowed_by_the_taiwan_suffix():
+    """".TWO" must resolve to the Taipei Exchange, not the TWSE.
+
+    The suffix table is scanned longest-first for exactly this pair. Without
+    the Taipei Exchange registered at all, ADATA and Phison were seeded as
+    ".TW" and the price vendor returned nothing for either — they were the
+    only Taiwanese names in the universe with no history.
+    """
+    from app.services import markets
+
+    tpex = markets.resolve("8299.TWO")
+    twse = markets.resolve("2330.TW")
+
+    assert tpex.mic == "ROCO"
+    assert twse.mic == "XTAI"
+    assert tpex is not twse
+    # Same country, currency and session; different venue.
+    assert tpex.currency == twse.currency == "TWD"
+    assert tpex.region == "asia_pacific"
+
+
+def test_taipei_listed_symbols_carry_the_two_suffix():
+    """The seeds themselves have to use it, or the market entry is decorative."""
+    from app.services.tickers import SEED_TICKERS
+
+    seeded = {seed.ticker for seed in SEED_TICKERS}
+    assert "8299.TWO" in seeded
+    assert "3260.TWO" in seeded
+    assert "8299.TW" not in seeded
+    assert "3260.TW" not in seeded

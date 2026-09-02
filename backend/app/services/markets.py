@@ -127,6 +127,12 @@ MARKETS: tuple[Market, ...] = (
             "Asia/Seoul", "09:00", "15:30"),
     _market(".TW", "Taiwan Stock Exchange", "XTAI", "TW", "asia_pacific", "TWD",
             "Asia/Taipei", "09:00", "13:30"),
+    # Taipei Exchange, Taiwan's second board. Several names this universe cares
+    # about list here rather than on the TWSE — Phison and ADATA among them —
+    # and under ".TW" the vendor returns nothing for them at all. The
+    # longest-suffix ordering below is what stops ".TW" from claiming these.
+    _market(".TWO", "Taipei Exchange", "ROCO", "TW", "asia_pacific", "TWD",
+            "Asia/Taipei", "09:00", "13:30"),
     _market(".SI", "Singapore Exchange", "XSES", "SG", "asia_pacific", "SGD",
             "Asia/Singapore", "09:00", "17:00"),
     _market(".NS", "National Stock Exchange of India", "XNSE", "IN", "asia_pacific", "INR",
