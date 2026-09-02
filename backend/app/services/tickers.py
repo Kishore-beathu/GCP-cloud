@@ -81,6 +81,27 @@ SEED_TICKERS: tuple[TickerSeed, ...] = (
     # from the cohort otherwise looks like an oversight.
     # --- Artificial intelligence ---------------------------------------------
     # Platform and model owners.
+    # Semiconductors that are not an AI trade. Analog, mixed-signal, RF, power
+    # and the mature-node foundries: they sell into cars, factories, handsets
+    # and appliances, and their cycle is inventory and end demand rather than
+    # cluster build-out. Kept out of ai_semiconductor deliberately — that
+    # sector is defined as names whose valuation moves on AI demand, and
+    # filing Texas Instruments under it would have made the label untrue and
+    # diluted the cohort these are ranked against.
+    TickerSeed("TXN", "Texas Instruments Incorporated", "semiconductor", "NASDAQ"),
+    TickerSeed("ADI", "Analog Devices Inc.", "semiconductor", "NASDAQ"),
+    TickerSeed("NXPI", "NXP Semiconductors N.V.", "semiconductor", "NASDAQ"),
+    TickerSeed("MCHP", "Microchip Technology Incorporated", "semiconductor", "NASDAQ"),
+    TickerSeed("ON", "ON Semiconductor Corporation", "semiconductor", "NASDAQ"),
+    TickerSeed("SWKS", "Skyworks Solutions Inc.", "semiconductor", "NASDAQ"),
+    TickerSeed("QRVO", "Qorvo Inc.", "semiconductor", "NASDAQ"),
+    TickerSeed("WOLF", "Wolfspeed Inc.", "semiconductor", "NYSE"),
+    TickerSeed("LSCC", "Lattice Semiconductor Corporation", "semiconductor", "NASDAQ"),
+    TickerSeed("CRUS", "Cirrus Logic Inc.", "semiconductor", "NASDAQ"),
+    TickerSeed("MTSI", "MACOM Technology Solutions Holdings", "semiconductor", "NASDAQ"),
+    TickerSeed("GFS", "GlobalFoundries Inc.", "semiconductor", "NASDAQ"),
+    TickerSeed("TSEM", "Tower Semiconductor Ltd.", "semiconductor", "NASDAQ"),
+    TickerSeed("2303.TW", "United Microelectronics Corporation", "semiconductor"),
     TickerSeed("NVDA", "NVIDIA Corporation", "ai_semiconductor", "NASDAQ"),
     TickerSeed("MSFT", "Microsoft Corporation", "ai_tech", "NASDAQ"),
     TickerSeed("GOOGL", "Alphabet Inc.", "ai_tech", "NASDAQ"),
@@ -142,6 +163,7 @@ SEED_TICKERS: tuple[TickerSeed, ...] = (
     # the rest sell into the accelerator build-out directly.
     TickerSeed("INTC", "Intel Corporation", "ai_semiconductor", "NASDAQ"),
     TickerSeed("QCOM", "QUALCOMM Incorporated", "ai_semiconductor", "NASDAQ"),
+    TickerSeed("SITM", "SiTime Corporation", "ai_semiconductor", "NASDAQ"),
     TickerSeed("ALAB", "Astera Labs Inc.", "ai_semiconductor", "NASDAQ"),
     TickerSeed("CRDO", "Credo Technology Group", "ai_semiconductor", "NASDAQ"),
     TickerSeed("MPWR", "Monolithic Power Systems", "ai_semiconductor", "NASDAQ"),
@@ -154,6 +176,21 @@ SEED_TICKERS: tuple[TickerSeed, ...] = (
     TickerSeed("AMAT", "Applied Materials Inc.", "ai_equipment", "NASDAQ"),
     TickerSeed("LRCX", "Lam Research Corporation", "ai_equipment", "NASDAQ"),
     TickerSeed("KLAC", "KLA Corporation", "ai_equipment", "NASDAQ"),
+    # Test, materials, metrology and inspection. The cohort held the four big
+    # deposition and lithography names and almost nothing else, which meant it
+    # tracked the fabs' capital budget and missed the consumables and test
+    # spend that continues between capex cycles.
+    TickerSeed("TER", "Teradyne Inc.", "ai_equipment", "NASDAQ"),
+    TickerSeed("ENTG", "Entegris Inc.", "ai_equipment", "NASDAQ"),
+    TickerSeed("MKSI", "MKS Instruments Inc.", "ai_equipment", "NASDAQ"),
+    TickerSeed("ONTO", "Onto Innovation Inc.", "ai_equipment", "NYSE"),
+    TickerSeed("ACLS", "Axcelis Technologies Inc.", "ai_equipment", "NASDAQ"),
+    TickerSeed("NVMI", "Nova Ltd.", "ai_equipment", "NASDAQ"),
+    TickerSeed("CAMT", "Camtek Ltd.", "ai_equipment", "NASDAQ"),
+    TickerSeed("6146.T", "Disco Corporation", "ai_equipment", "TSE"),
+    TickerSeed("6920.T", "Lasertec Corporation", "ai_equipment", "TSE"),
+    TickerSeed("7735.T", "SCREEN Holdings Co. Ltd.", "ai_equipment", "TSE"),
+    TickerSeed("6525.T", "Kokusai Electric Corporation", "ai_equipment", "TSE"),
     TickerSeed("SNPS", "Synopsys Inc.", "ai_equipment", "NASDAQ"),
     TickerSeed("CDNS", "Cadence Design Systems", "ai_equipment", "NASDAQ"),
     TickerSeed("8035.T", "Tokyo Electron Ltd.", "ai_equipment", "TSE"),
@@ -166,6 +203,15 @@ SEED_TICKERS: tuple[TickerSeed, ...] = (
     TickerSeed("COHR", "Coherent Corp.", "ai_networking", "NYSE"),
     TickerSeed("LITE", "Lumentum Holdings Inc.", "ai_networking", "NASDAQ"),
     TickerSeed("CIEN", "Ciena Corporation", "ai_networking", "NYSE"),
+    # Optics and switching. Four names could not carry a sector that decides
+    # how much of a cluster's cost is interconnect: the transceiver makers and
+    # the switch ODM belong here as much as the systems vendors do.
+    TickerSeed("CSCO", "Cisco Systems Inc.", "ai_networking", "NASDAQ"),
+    TickerSeed("FN", "Fabrinet", "ai_networking", "NYSE"),
+    TickerSeed("AAOI", "Applied Optoelectronics Inc.", "ai_networking", "NASDAQ"),
+    TickerSeed("SMTC", "Semtech Corporation", "ai_networking", "NASDAQ"),
+    TickerSeed("MXL", "MaxLinear Inc.", "ai_networking", "NASDAQ"),
+    TickerSeed("2345.TW", "Accton Technology Corporation", "ai_networking"),
     # Platforms and applications.
     TickerSeed("IBM", "International Business Machines", "ai_tech", "NYSE"),
     TickerSeed("SMCI", "Super Micro Computer Inc.", "ai_tech", "NASDAQ"),
@@ -287,6 +333,12 @@ SEED_TICKERS: tuple[TickerSeed, ...] = (
     TickerSeed("2382.TW", "Quanta Computer Inc.", "server_hardware"),
     TickerSeed("3231.TW", "Wistron Corporation", "server_hardware"),
     TickerSeed("6669.TW", "Wiwynn Corporation", "server_hardware"),
+    # The branded builders, as against the ODMs above. They sell their own
+    # nameplate into enterprises rather than building to a hyperscaler's
+    # drawing, so they carry inventory and pricing risk the ODMs do not.
+    TickerSeed("0992.HK", "Lenovo Group Limited", "server_hardware", "HKEX"),
+    TickerSeed("2376.TW", "Gigabyte Technology Co. Ltd.", "server_hardware"),
+    TickerSeed("2357.TW", "ASUSTeK Computer Inc.", "server_hardware"),
     TickerSeed("2356.TW", "Inventec Corporation", "server_hardware"),
     TickerSeed("000977.SZ", "Inspur Electronic Information", "server_hardware"),
     # Memory, deepened. The cohort had the three big DRAM makers and little of
@@ -295,6 +347,11 @@ SEED_TICKERS: tuple[TickerSeed, ...] = (
     TickerSeed("2337.TW", "Macronix International", "memory"),
     TickerSeed("8299.TW", "Phison Electronics Corp.", "memory"),
     TickerSeed("SIMO", "Silicon Motion Technology (ADR)", "memory", "NASDAQ"),
+    # Module makers. They buy DRAM and NAND wafers and sell finished modules,
+    # so their margin moves inversely to the spot price the fabs above earn on
+    # it — the cohort had every seller of memory and no buyer of it.
+    TickerSeed("3260.TW", "ADATA Technology Co. Ltd.", "memory"),
+    TickerSeed("2451.TW", "Transcend Information Inc.", "memory"),
     TickerSeed("RMBS", "Rambus Inc.", "memory", "NASDAQ"),
     TickerSeed("NLST", "Netlist Inc.", "memory", "NASDAQ"),
     TickerSeed("MRAM", "Everspin Technologies", "memory", "NASDAQ"),

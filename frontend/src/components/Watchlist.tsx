@@ -42,6 +42,7 @@ const SECTOR_LABELS: Record<string, string> = {
   health_it: 'Health IT',
   ai_tech: 'AI platforms',
   ai_semiconductor: 'AI semiconductors',
+  semiconductor: 'Semiconductors (broad)',
   ai_equipment: 'Semiconductor equipment',
   ai_networking: 'AI networking',
   ai_software: 'AI software',

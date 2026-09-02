@@ -62,13 +62,19 @@ GROUPS: tuple[SectorGroup, ...] = (
         label="Artificial Intelligence",
         description=(
             "Companies whose valuation moves on AI demand: model and platform "
-            "owners, the semiconductors that train them, the equipment that "
-            "fabricates those, the networking that connects them, and AI-first "
-            "drug discovery."
+            "owners, the semiconductors that train them, the broader chip "
+            "industry they are cut from, the equipment that fabricates those, "
+            "the networking that connects them, and AI-first drug discovery."
         ),
         sectors=(
             "ai_tech",
             "ai_semiconductor",
+            # Separate from ai_semiconductor, which is defined by what moves
+            # the valuation rather than by what the company makes. Analog, RF,
+            # power and mature-node foundry names trade on car and handset
+            # inventory, not on cluster build-out, and ranking them in the
+            # same cohort would score two different cycles against each other.
+            "semiconductor",
             "ai_equipment",
             "ai_networking",
             "ai_software",
