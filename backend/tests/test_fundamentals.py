@@ -476,3 +476,31 @@ async def test_a_vendor_answer_with_no_usable_metric_is_no_coverage(monkeypatch)
 
     assert result["pe_ratio"] == 18.4
     assert result["ps_ratio"] is None
+
+
+@pytest.mark.asyncio
+async def test_skipped_non_us_counts_only_the_non_us(db, seeded_stocks, monkeypatch):
+    """The counter must not absorb every other exclusion.
+
+    Derived as active_total - selected, it reported "275 skipped as non-US"
+    for a request naming one US ticker that happened not to be stale. The true
+    non-US count was zero, and the number pointed at the wrong filter entirely.
+    """
+    from app.models import Stock
+    from app.services import fundamentals
+
+    db.add(Stock(ticker="000660.KS", company_name="SK hynix", sector="memory"))
+    await db.commit()
+
+    selected, skipped = await fundamentals._stocks_to_refresh(
+        db, ["MRNA"], only_stale=False, include_non_us=False
+    )
+    # Asking for one US ticker excludes the others by name, not nationality.
+    assert [s.ticker for s in selected] == ["MRNA"]
+    assert skipped == 0
+
+    selected, skipped = await fundamentals._stocks_to_refresh(
+        db, None, only_stale=False, include_non_us=False
+    )
+    assert "000660.KS" not in [s.ticker for s in selected]
+    assert skipped == 1

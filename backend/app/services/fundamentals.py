@@ -107,17 +107,15 @@ async def ingest_fundamentals(
         logger.info("Fundamentals ingest skipped: no Finnhub key")
         return report
 
-    stocks = await _stocks_to_refresh(db, tickers, only_stale, include_non_us)
+    stocks, skipped_non_us = await _stocks_to_refresh(
+        db, tickers, only_stale, include_non_us
+    )
     report.symbols = len(stocks)
-    if not include_non_us:
-        total = len(
-            list(
-                (
-                    await db.execute(select(Stock).where(Stock.is_active.is_(True)))
-                ).scalars()
-            )
-        )
-        report.skipped_non_us = max(0, total - len(stocks))
+    # Counted where the filter runs. Deriving it from the active total made it
+    # absorb every other exclusion — a request for one ticker that turned out
+    # not to be stale reported 275 symbols "skipped as non-US", of which the
+    # true number was zero.
+    report.skipped_non_us = skipped_non_us
     if not stocks:
         return report
 
@@ -282,12 +280,14 @@ async def _upsert_trend(db: AsyncSession, ticker_id: int, row: dict) -> bool:
 
 async def _stocks_to_refresh(
     db: AsyncSession, tickers: list[str] | None, only_stale: bool, include_non_us: bool
-) -> list[Stock]:
+) -> tuple[list[Stock], int]:
+    """The symbols to refresh, and how many were dropped for being non-US."""
     query = select(Stock).where(Stock.is_active.is_(True)).order_by(Stock.ticker)
     if tickers:
         query = query.where(Stock.ticker.in_([t.upper() for t in tickers]))
     stocks = list((await db.execute(query)).scalars())
 
+    skipped_non_us = 0
     if not include_non_us:
         # The free tier covers US listings and returns an empty profile for
         # everything else. Asking anyway spends about 110 of this universe's
@@ -296,18 +296,21 @@ async def _stocks_to_refresh(
         # first surfaces on a symbol the vendor would not have covered either
         # way. That made a plain authentication failure look like a coverage
         # problem.
-        stocks = [stock for stock in stocks if not (stock.ticker or "").count(".")]
+        kept = [stock for stock in stocks if "." not in (stock.ticker or "")]
+        skipped_non_us = len(stocks) - len(kept)
+        stocks = kept
 
     if not only_stale:
-        return stocks
+        return stocks, skipped_non_us
 
     cutoff = datetime.now(timezone.utc) - timedelta(days=STALE_FUNDAMENTALS_DAYS)
-    return [
+    fresh_enough = [
         stock
         for stock in stocks
         if stock.fundamentals_at is None
         or _aware(stock.fundamentals_at) < cutoff
     ]
+    return fresh_enough, skipped_non_us
 
 
 def _aware(moment: datetime) -> datetime:
