@@ -473,3 +473,52 @@ def test_intraday_keeps_a_quiet_bar_in_the_middle_of_a_session():
 
     assert len(bars) == 3
     assert bars[1].volume == 0
+
+
+def test_the_five_minute_window_asks_for_minute_bars_and_keeps_five():
+    """The shortest window has to be minute bars, not a shorter span of 5m ones.
+
+    Yahoo's interval and range are separate: asking for a 5-minute span at the
+    5m interval would return a single bar and draw nothing. The window keeps
+    the last five 1-minute bars out of the day's series instead, which is the
+    same upstream call the hour already makes.
+    """
+    from app.integrations.yahoo import INTRADAY_WINDOWS
+
+    range_, interval, keep_last, ttl = INTRADAY_WINDOWS["5m"]
+    assert interval == "1m"
+    assert keep_last == 5
+    # Shorter than the hour's cache: at five bars, a stale one is a fifth of
+    # the chart.
+    assert ttl < INTRADAY_WINDOWS["1h"][3]
+    assert range_ == INTRADAY_WINDOWS["1h"][0]
+
+
+@pytest.mark.asyncio
+async def test_intraday_endpoint_accepts_the_five_minute_window(
+    client, seeded_stocks, monkeypatch
+):
+    """The route validates against the window table, so 5m must be routable."""
+    from datetime import datetime, timezone
+
+    from app.integrations import yahoo
+
+    async def _bars(ticker: str, window: str):
+        assert window == "5m"
+        return [
+            yahoo.Bar(at=datetime(2026, 9, 2, 15, 30 + n, tzinfo=timezone.utc),
+                      close=100.0 + n)
+            for n in range(5)
+        ]
+
+    monkeypatch.setattr("app.routers.stocks.fetch_intraday", _bars)
+
+    response = await client.get(
+        f"/stocks/{seeded_stocks[0].ticker}/intraday", params={"window": "5m"}
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["window"] == "5m"
+    assert body["interval"] == "1m"
+    assert len(body["points"]) == 5

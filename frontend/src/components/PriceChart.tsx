@@ -24,7 +24,11 @@ type Range =
   | { label: string; kind: 'intraday'; window: IntradayWindow }
   | { label: string; kind: 'daily'; days: number }
 
+const DEFAULT_RANGE = '3M'
+
 const RANGES: Range[] = [
+  // Spelled out rather than "5M", which reads as five months beside 3M and 1M.
+  { label: '5 min', kind: 'intraday', window: '5m' },
   { label: '1H', kind: 'intraday', window: '1h' },
   { label: '1D', kind: 'intraday', window: '1d' },
   { label: '1W', kind: 'intraday', window: '1w' },
@@ -47,8 +51,13 @@ interface Props {
 }
 
 export function PriceChart({ ticker }: Props) {
-  const [label, setLabel] = useState('3M')
-  const range = RANGES.find((option) => option.label === label) ?? RANGES[4]
+  const [label, setLabel] = useState(DEFAULT_RANGE)
+  // Found by label, not by index: a positional fallback silently pointed at a
+  // different range every time a button was added to the row.
+  const range =
+    RANGES.find((option) => option.label === label) ??
+    RANGES.find((option) => option.label === DEFAULT_RANGE) ??
+    RANGES[0]
 
   const { data, error, loading } = useAsync(
     () =>

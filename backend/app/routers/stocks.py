@@ -235,10 +235,10 @@ async def get_price_history(
 )
 async def get_intraday(
     ticker: str,
-    window: str = Query(default="1d", description="1h, 1d or 1w"),
+    window: str = Query(default="1d", description="5m, 1h, 1d or 1w"),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    """Bars for the last hour, day or week.
+    """Bars for the last five minutes, hour, day or week.
 
     Served live rather than from `stock_prices`, which holds one row per
     trading day: mixing minute bars into it would redefine "the previous

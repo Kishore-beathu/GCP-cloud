@@ -85,7 +85,7 @@ export interface Price {
 }
 
 /** Short windows come from a live endpoint, not the stored daily series. */
-export type IntradayWindow = '1h' | '1d' | '1w'
+export type IntradayWindow = '5m' | '1h' | '1d' | '1w'
 
 export interface IntradayPoint {
   at: string

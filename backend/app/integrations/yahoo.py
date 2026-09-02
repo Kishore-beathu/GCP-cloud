@@ -274,6 +274,11 @@ async def count_unpriced(db: AsyncSession) -> int:
 
 # window -> (Yahoo range, Yahoo interval, keep last N points, cache seconds)
 INTRADAY_WINDOWS: dict[str, tuple[str, str, int | None, int]] = {
+    # The last five minutes, one bar each. Cached for 10 seconds rather than
+    # the 30 the hour uses: at this length a bar that is half a minute stale is
+    # a third of the chart, and the upstream call is the same one the hour
+    # already makes.
+    "5m": ("1d", "1m", 5, 10),
     "1h": ("1d", "1m", 60, 30),
     "1d": ("1d", "5m", None, 60),
     "1w": ("5d", "15m", None, 300),
