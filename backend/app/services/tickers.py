@@ -137,6 +137,11 @@ SEED_TICKERS: tuple[TickerSeed, ...] = (
     TickerSeed("P", "Everpure Inc.", "storage_hardware", "NYSE"),
     TickerSeed("DELL", "Dell Technologies Inc.", "storage_hardware", "NYSE"),
     TickerSeed("HPE", "Hewlett Packard Enterprise", "storage_hardware", "NYSE"),
+    # Hitachi owns Vantara, one of the few remaining enterprise storage
+    # businesses not already represented here, and sells the grid equipment
+    # the same build-out needs. It sits in storage rather than power because
+    # storage is the part that competes with NetApp and Dell directly.
+    TickerSeed("6501.T", "Hitachi Ltd.", "storage_hardware", "TSE"),
     TickerSeed("MU", "Micron Technology Inc.", "memory", "NASDAQ"),
     TickerSeed("000660.KS", "SK hynix Inc.", "memory", "KRX"),
     TickerSeed("2408.TW", "Nanya Technology Corporation", "memory", "TWSE"),
@@ -231,6 +236,7 @@ SEED_TICKERS: tuple[TickerSeed, ...] = (
     TickerSeed("BOX", "Box Inc.", "cloud_storage", "NYSE"),
     TickerSeed("AKAM", "Akamai Technologies Inc.", "cloud_storage", "NASDAQ"),
     TickerSeed("NET", "Cloudflare Inc.", "cloud_storage", "NYSE"),
+    TickerSeed("RXT", "Rackspace Technology Inc.", "cloud_storage", "NASDAQ"),
     # Query and observability layers over stored data.
     TickerSeed("DDOG", "Datadog Inc.", "data_platform", "NASDAQ"),
     TickerSeed("ESTC", "Elastic NV", "data_platform", "NYSE"),
@@ -339,6 +345,14 @@ SEED_TICKERS: tuple[TickerSeed, ...] = (
     TickerSeed("0992.HK", "Lenovo Group Limited", "server_hardware", "HKEX"),
     TickerSeed("2376.TW", "Gigabyte Technology Co. Ltd.", "server_hardware"),
     TickerSeed("2357.TW", "ASUSTeK Computer Inc.", "server_hardware"),
+    # The contract manufacturers. They assemble the racks the ODMs above
+    # design and the hyperscalers order, and they are the North American way
+    # into a build-out otherwise expressed almost entirely in Taipei.
+    TickerSeed("CLS", "Celestica Inc.", "server_hardware", "NYSE"),
+    TickerSeed("FLEX", "Flex Ltd.", "server_hardware", "NASDAQ"),
+    TickerSeed("JBL", "Jabil Inc.", "server_hardware", "NYSE"),
+    TickerSeed("6702.T", "Fujitsu Limited", "server_hardware", "TSE"),
+    TickerSeed("6701.T", "NEC Corporation", "server_hardware", "TSE"),
     TickerSeed("2356.TW", "Inventec Corporation", "server_hardware"),
     TickerSeed("000977.SZ", "Inspur Electronic Information", "server_hardware"),
     # Memory, deepened. The cohort had the three big DRAM makers and little of
@@ -361,6 +375,8 @@ SEED_TICKERS: tuple[TickerSeed, ...] = (
     TickerSeed("CVLT", "Commvault Systems Inc.", "data_platform", "NASDAQ"),
     TickerSeed("RBRK", "Rubrik Inc.", "data_platform", "NYSE"),
     TickerSeed("VRNS", "Varonis Systems Inc.", "data_platform", "NASDAQ"),
+    TickerSeed("AMPL", "Amplitude Inc.", "data_platform", "NASDAQ"),
+    TickerSeed("OTEX", "Open Text Corporation", "data_platform", "NASDAQ"),
     TickerSeed("DOMO", "Domo Inc.", "data_platform", "NASDAQ"),
     # Storage sold as a service.
     TickerSeed("BLZE", "Backblaze Inc.", "cloud_storage", "NASDAQ"),
@@ -373,6 +389,17 @@ SEED_TICKERS: tuple[TickerSeed, ...] = (
     TickerSeed("NBIS", "Nebius Group N.V.", "data_center", "NASDAQ"),
     TickerSeed("CIFR", "Cipher Mining Inc.", "data_center", "NASDAQ"),
     TickerSeed("WULF", "TeraWulf Inc.", "data_center", "NASDAQ"),
+    # Miners that have turned their power contracts and shells into AI hosting.
+    # They belong with the data centres rather than anywhere crypto-shaped:
+    # what they sell now is compute capacity, and they re-rate on hosting deals
+    # rather than on the coin price.
+    TickerSeed("RIOT", "Riot Platforms Inc.", "data_center", "NASDAQ"),
+    TickerSeed("MARA", "MARA Holdings Inc.", "data_center", "NASDAQ"),
+    TickerSeed("CORZ", "Core Scientific Inc.", "data_center", "NASDAQ"),
+    # Landlords and developers, as against operators.
+    TickerSeed("DBRG", "DigitalBridge Group Inc.", "data_center", "NYSE"),
+    TickerSeed("AJBU.SI", "Keppel DC REIT", "data_center", "SGX"),
+    TickerSeed("GMG.AX", "Goodman Group", "data_center", "ASX"),
     TickerSeed("HUT", "Hut 8 Corp.", "data_center", "NASDAQ"),
     TickerSeed("GLXY", "Galaxy Digital Inc.", "data_center", "NASDAQ"),
     TickerSeed("VNET", "VNET Group Inc. (ADR)", "data_center", "NASDAQ"),
@@ -391,6 +418,19 @@ SEED_TICKERS: tuple[TickerSeed, ...] = (
     TickerSeed("FIX", "Comfort Systems USA", "datacenter_power", "NYSE"),
     TickerSeed("EME", "EMCOR Group Inc.", "datacenter_power", "NYSE"),
     TickerSeed("VST", "Vistra Corp.", "datacenter_power", "NYSE"),
+    # Switchgear and electrical distribution — the equipment between the grid
+    # and the rack, and the part of the build-out with the longest lead times.
+    TickerSeed("POWL", "Powell Industries Inc.", "datacenter_power", "NASDAQ"),
+    TickerSeed("HUBB", "Hubbell Incorporated", "datacenter_power", "NYSE"),
+    TickerSeed("ATKR", "Atkore Inc.", "datacenter_power", "NYSE"),
+    TickerSeed("ENR.DE", "Siemens Energy AG", "datacenter_power", "XETRA"),
+    TickerSeed("7011.T", "Mitsubishi Heavy Industries", "datacenter_power", "TSE"),
+    # Small modular reactors. Speculative and pre-revenue, and included for
+    # that reason rather than despite it: they trade almost entirely on
+    # data-centre power announcements, which is the signal this cohort exists
+    # to catch. Neither has a reactor operating.
+    TickerSeed("OKLO", "Oklo Inc.", "datacenter_power", "NYSE"),
+    TickerSeed("SMR", "NuScale Power Corporation", "datacenter_power", "NYSE"),
     TickerSeed("CEG", "Constellation Energy Corporation", "datacenter_power", "NASDAQ"),
     TickerSeed("TLN", "Talen Energy Corporation", "datacenter_power", "NASDAQ"),
     TickerSeed("NRG", "NRG Energy Inc.", "datacenter_power", "NYSE"),
