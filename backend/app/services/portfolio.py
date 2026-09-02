@@ -246,8 +246,17 @@ async def execute_trade(
     price: float,
     rationale: str = "manual",
     executed_at: datetime | None = None,
+    stop: float | None = None,
+    target: float | None = None,
+    setup: str | None = None,
 ) -> Trade:
-    """Record a fill, adjusting cash. Raises on insufficient funds or shares."""
+    """Record a fill, adjusting cash. Raises on insufficient funds or shares.
+
+    ``stop`` and ``target`` belong on the opening trade. They are what the exit
+    monitor acts on, and recording them as numbers rather than inside the
+    rationale is the difference between a plan the system can honour and one it
+    can only quote back afterwards.
+    """
     if quantity <= 0:
         raise ValueError("quantity must be positive")
     if price <= 0:
@@ -274,6 +283,9 @@ async def execute_trade(
         quantity=quantity,
         price=price,
         rationale=rationale,
+        stop=stop,
+        target=target,
+        setup=setup,
     )
     if executed_at is not None:
         trade.executed_at = executed_at

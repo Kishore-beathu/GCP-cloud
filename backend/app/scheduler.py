@@ -157,6 +157,24 @@ async def finnhub_quote_job() -> None:
             logger.info("Finnhub quote job: %s", result)
 
 
+async def paper_exit_job() -> None:
+    """Close paper positions whose stop or target has traded.
+
+    Off unless PAPER_EXITS_ENABLED is set. It exists so the paper log records
+    what the plan said, rather than what someone happened to be awake for.
+    """
+    from app.services.paper_exits import check_exits
+
+    async with get_session_factory()() as db:
+        try:
+            report = await check_exits(db)
+        except Exception:
+            logger.exception("Paper exit job failed")
+            return
+        if report.exits:
+            logger.info("Paper exit job: %s", report.as_dict())
+
+
 async def intraday_record_job() -> None:
     """Keep the current session's five-minute bars.
 
@@ -393,6 +411,16 @@ def start_scheduler() -> AsyncIOScheduler | None:
             IntervalTrigger(seconds=settings.finnhub_quote_interval_seconds),
             id="finnhub_quotes",
             name="Finnhub quote refresh",
+            max_instances=1,
+            coalesce=True,
+        )
+
+    if settings.paper_exits_enabled:
+        scheduler.add_job(
+            paper_exit_job,
+            IntervalTrigger(minutes=settings.paper_exits_interval_minutes),
+            id="paper_exits",
+            name="Paper position exit monitoring",
             max_instances=1,
             coalesce=True,
         )

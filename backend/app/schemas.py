@@ -190,6 +190,12 @@ class TradeCreate(BaseModel):
     # Omit to fill at the latest stored close.
     price: float | None = Field(default=None, gt=0)
     rationale: str = "manual"
+    # The exit plan. Given on an opening trade, the exit monitor will close the
+    # position when either level trades, instead of leaving it open because
+    # nobody was at the screen.
+    stop: float | None = Field(default=None, gt=0)
+    target: float | None = Field(default=None, gt=0)
+    setup: str | None = Field(default=None, max_length=64)
 
     @field_validator("ticker")
     @classmethod
@@ -203,6 +209,9 @@ class TradeCreate(BaseModel):
 class TradeOut(ORMModel):
     id: int
     ticker: str
+    stop: float | None = None
+    target: float | None = None
+    setup: str | None = None
     side: TradeSide
     quantity: float
     price: float

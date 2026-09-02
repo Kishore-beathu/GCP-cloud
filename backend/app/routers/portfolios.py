@@ -172,7 +172,16 @@ async def create_trade(
 
     try:
         trade = await execute_trade(
-            db, portfolio, stock, payload.side, payload.quantity, price, payload.rationale
+            db,
+            portfolio,
+            stock,
+            payload.side,
+            payload.quantity,
+            price,
+            payload.rationale,
+            stop=payload.stop,
+            target=payload.target,
+            setup=payload.setup,
         )
     except (InsufficientFunds, InsufficientShares) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -189,7 +198,31 @@ async def create_trade(
         price=trade.price,
         executed_at=trade.executed_at,
         rationale=trade.rationale,
+        stop=trade.stop,
+        target=trade.target,
+        setup=trade.setup,
     )
+
+
+@router.post(
+    "/{portfolio_id}/exits/check",
+    summary="Close positions whose stop or target has traded",
+)
+async def check_portfolio_exits(
+    portfolio_id: int, db: AsyncSession = Depends(get_db)
+) -> dict:
+    """Honour the plan recorded on each open position.
+
+    Without this the log is biased rather than merely incomplete: a target is
+    hit while you are watching and gets closed, a stop is breached while you
+    are not and the position runs. Any hit rate computed from that measures
+    attention, not the setup.
+    """
+    from app.services.paper_exits import check_exits
+
+    await _get_portfolio_or_404(db, portfolio_id)
+    report = await check_exits(db, portfolio_id)
+    return report.as_dict()
 
 
 @router.post(

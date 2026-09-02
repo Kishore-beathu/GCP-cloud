@@ -276,6 +276,17 @@ class Trade(Base):
     # Why the trade happened: "manual", or the signal that generated it.
     rationale: Mapped[str | None] = mapped_column(String(255))
 
+    # The plan, as numbers rather than prose. These used to live inside
+    # `rationale`, where nothing could read them — so a position whose stop was
+    # breached while nobody was watching simply stayed open, and the log
+    # recorded a loss the plan had said to cut. Stored here, the exit monitor
+    # can act on them.
+    stop: Mapped[float | None] = mapped_column(Float)
+    target: Mapped[float | None] = mapped_column(Float)
+    # Which setup produced the entry, so the log can be grouped by setup when
+    # the hit rate is eventually counted.
+    setup: Mapped[str | None] = mapped_column(String(64), index=True)
+
     portfolio: Mapped[Portfolio] = relationship(back_populates="trades")
     stock: Mapped[Stock] = relationship()
 

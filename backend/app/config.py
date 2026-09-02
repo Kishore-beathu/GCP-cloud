@@ -214,6 +214,13 @@ class Settings(BaseSettings):
     intraday_record_group: str | None = None
     intraday_record_limit: int = 40
 
+    # --- Paper exit monitoring ------------------------------------------------
+    # Closes paper positions when the stop or target recorded on the entry
+    # trades. Off by default because it writes to the trade log, and a log that
+    # changes without the owner asking is worse than one that lags.
+    paper_exits_enabled: bool = False
+    paper_exits_interval_minutes: int = 5
+
     # --- Finnhub live trade stream ------------------------------------------
     # The one true real-time source: a WebSocket carrying trade ticks. Only
     # runs when FINNHUB_API_KEY is set.
