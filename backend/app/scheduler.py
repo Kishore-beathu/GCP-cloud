@@ -157,6 +157,31 @@ async def finnhub_quote_job() -> None:
             logger.info("Finnhub quote job: %s", result)
 
 
+async def intraday_record_job() -> None:
+    """Keep the current session's five-minute bars.
+
+    Off unless INTRADAY_RECORD_ENABLED is set. Recording is what makes the
+    intraday setups measurable: their hit rate is unknown today because
+    nothing kept the bars they fired on. Nothing reads this data yet — it has
+    to accumulate first, which is the point of starting.
+    """
+    from app.services.intraday_store import record_intraday
+
+    settings = get_settings()
+    async with get_session_factory()() as db:
+        try:
+            report = await record_intraday(
+                db,
+                group=settings.intraday_record_group,
+                limit=settings.intraday_record_limit,
+            )
+        except Exception:
+            logger.exception("Intraday recording job failed")
+            return
+        if report.bars_stored:
+            logger.info("Intraday recording job: %s", report.as_dict())
+
+
 async def yahoo_price_job() -> None:
     """Load prices and history for the symbols no keyed vendor covers.
 
@@ -368,6 +393,16 @@ def start_scheduler() -> AsyncIOScheduler | None:
             IntervalTrigger(seconds=settings.finnhub_quote_interval_seconds),
             id="finnhub_quotes",
             name="Finnhub quote refresh",
+            max_instances=1,
+            coalesce=True,
+        )
+
+    if settings.intraday_record_enabled:
+        scheduler.add_job(
+            intraday_record_job,
+            IntervalTrigger(minutes=settings.intraday_record_interval_minutes),
+            id="intraday_record",
+            name="Intraday bar recording",
             max_instances=1,
             coalesce=True,
         )

@@ -278,6 +278,47 @@ async def trigger_yahoo_prices(
     }
 
 
+@router.post(
+    "/admin/ingest/intraday",
+    summary="Record the current session's 5-minute bars",
+    dependencies=[Depends(require_auth)],
+)
+async def trigger_intraday_recording(
+    ticker: list[str] | None = Query(default=None, description="Limit to these symbols"),
+    group: str | None = Query(default=None, description="Industry group, e.g. ai"),
+    limit: int = Query(
+        default=50,
+        ge=1,
+        le=200,
+        description="Symbols per run. One vendor request each, so this is the cost.",
+    ),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Store intraday bars so the setups can eventually be measured.
+
+    The setups scanner reports conditions that are true right now and cannot
+    say how often acting on them paid, because nothing kept the bars. This
+    accumulates them. Until enough sessions have been recorded there is
+    nothing to measure — see GET /admin/intraday/coverage for progress.
+    """
+    from app.services.intraday_store import record_intraday
+
+    report = await record_intraday(db, ticker, group, limit)
+    return report.as_dict()
+
+
+@router.get(
+    "/admin/intraday/coverage",
+    summary="How much intraday history has accumulated",
+    dependencies=[Depends(require_auth)],
+)
+async def intraday_coverage(db: AsyncSession = Depends(get_db)) -> dict:
+    """Progress toward being able to measure a setup's hit rate."""
+    from app.services.intraday_store import coverage
+
+    return await coverage(db)
+
+
 # One handler per source, so a caller can name exactly what to pull.
 _SOURCE_RUNNERS = {
     "edgar": ingest_recent_filings,

@@ -518,3 +518,56 @@ class CatalystEvent(Base):
     )
 
     stock: Mapped[Stock] = relationship()
+
+
+class IntradayBar(Base):
+    """One intraday bar, stored so a setup can be measured after the fact.
+
+    Deliberately a separate table from ``stock_prices``, which holds exactly
+    one row per (ticker, trading day). The backtester, the portfolio valuation
+    and the watchlist's day-over-day change all read "the previous row" as
+    "the previous close", and writing minute bars into it would quietly
+    redefine that for every one of them.
+
+    The reason this table exists at all: the intraday setups could not be
+    validated, because there was no record of what a five-minute chart looked
+    like at 09:47 last Tuesday. A scanner whose hit rate cannot be measured is
+    an opinion. Accumulating bars is the prerequisite for turning it into a
+    number.
+    """
+
+    __tablename__ = "intraday_bars"
+    __table_args__ = (
+        # A run re-fetches the whole session rather than only new bars, so a
+        # missed run heals itself on the next one. That only works if storing
+        # a bar twice is a no-op.
+        UniqueConstraint(
+            "ticker_id", "interval", "at", name="uq_intraday_bars_point"
+        ),
+        Index("ix_intraday_bars_ticker_at", "ticker_id", "at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    ticker_id: Mapped[int] = mapped_column(
+        ForeignKey("stocks.id", ondelete="CASCADE"), index=True
+    )
+    # "5m", "1m". Stored per row rather than assumed, because a series
+    # recorded at one interval cannot be compared with one recorded at another
+    # and silently mixing them would corrupt every average built from them.
+    interval: Mapped[str] = mapped_column(String(8), default="5m", index=True)
+    at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+
+    open: Mapped[float | None] = mapped_column(Float)
+    high: Mapped[float | None] = mapped_column(Float)
+    low: Mapped[float | None] = mapped_column(Float)
+    close: Mapped[float] = mapped_column(Float)
+    # Null means unknown, not zero. A zero-volume bar reads as a halt and
+    # drags every relative-volume average down with it.
+    volume: Mapped[int | None] = mapped_column(Integer)
+
+    source: Mapped[str] = mapped_column(String(32), default="yahoo")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+    stock: Mapped[Stock] = relationship()

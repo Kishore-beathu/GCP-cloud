@@ -204,6 +204,16 @@ class Settings(BaseSettings):
     yahoo_price_range: str = "3mo"
     yahoo_price_batch_size: int = 30
 
+    # --- Intraday bar recording ---------------------------------------------
+    # Off by default. It is one vendor request per symbol per run at an
+    # undocumented endpoint, and switching it on for the whole universe is
+    # roughly a request a second sustained — which ends in a rate limit and no
+    # data at all. Name a group and a modest limit, and turn it on knowingly.
+    intraday_record_enabled: bool = False
+    intraday_record_interval_minutes: int = 15
+    intraday_record_group: str | None = None
+    intraday_record_limit: int = 40
+
     # --- Finnhub live trade stream ------------------------------------------
     # The one true real-time source: a WebSocket carrying trade ticks. Only
     # runs when FINNHUB_API_KEY is set.
