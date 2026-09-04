@@ -1,0 +1,64 @@
+# Cloud Build pipeline: test, build, push, deploy to Cloud Run.
+#
+# Trigger this from the repository root with:
+#   gcloud builds submit --config backend/cloudbuild.yaml \
+#     --substitutions=_REGION=europe-west4,_SERVICE=trading-api
+#
+# Secrets (DATABASE_URL, API keys) are NOT set here — they live in Secret
+# Manager and are bound to the service once, at deploy time. See
+# docs/DEPLOYMENT.md.
+
+substitutions:
+  _REGION: europe-west4
+  _SERVICE: trading-api
+  _REPO: trading-agent
+
+steps:
+  # Fail the build before publishing anything if the suite is red.
+  - id: test
+    name: python:3.11-slim
+    dir: backend
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        pip install --no-cache-dir -r requirements-dev.txt
+        python -m pytest -q
+
+  - id: build
+    name: gcr.io/cloud-builders/docker
+    dir: backend
+    args:
+      - build
+      - -t
+      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_SERVICE}:$SHORT_SHA
+      - -t
+      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_SERVICE}:latest
+      - .
+
+  - id: push
+    name: gcr.io/cloud-builders/docker
+    args:
+      - push
+      - --all-tags
+      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_SERVICE}
+
+  - id: deploy
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: gcloud
+    args:
+      - run
+      - deploy
+      - ${_SERVICE}
+      - --image=${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_SERVICE}:$SHORT_SHA
+      - --region=${_REGION}
+      - --platform=managed
+      # Secrets and env vars are configured on the service once; re-deploys
+      # inherit them, so they are deliberately not repeated per build.
+      - --quiet
+
+images:
+  - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_SERVICE}
+
+options:
+  logging: CLOUD_LOGGING_ONLY
