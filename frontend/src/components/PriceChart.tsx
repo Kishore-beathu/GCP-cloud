@@ -12,6 +12,7 @@ import {
 import { getIntraday, getPrices } from '../api/client'
 import type { IntradayWindow } from '../api/types'
 import { useAsync } from '../hooks/useAsync'
+import { ChangeText } from './badges'
 
 /**
  * Two kinds of range, deliberately.
@@ -81,10 +82,28 @@ export function PriceChart({ ticker }: Props) {
 
   const points = data ?? []
 
+  // The move across the window on screen, not the day's change. A 3M chart
+  // showing "+1.58%" would be quoting today's tick beside three months of
+  // prices, which reads as the range's return and is not.
+  const first = points[0]?.close
+  const last = points[points.length - 1]?.close
+  const change =
+    first != null && last != null && first !== 0
+      ? ((last - first) / first) * 100
+      : null
+
   return (
     <section className="panel chart">
       <header>
-        <h2>{ticker} price</h2>
+        <h2>
+          {ticker} price
+          {points.length > 1 && (
+            <span className="range-change">
+              <ChangeText value={change} />
+              <span className="muted"> over {label}</span>
+            </span>
+          )}
+        </h2>
         <div className="filters">
           {RANGES.map((option) => (
             <button

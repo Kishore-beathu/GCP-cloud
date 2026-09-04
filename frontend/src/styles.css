@@ -217,6 +217,15 @@ main {
   margin: 0;
 }
 
+/* The window's move, set beside the title rather than under it: the heading
+   answers "what am I looking at", and over what period it moved is part of
+   that answer. */
+.range-change {
+  margin-left: 8px;
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+}
+
 .panel h3 {
   font-size: 12px;
   margin: 14px 0 6px;
