@@ -225,6 +225,79 @@ async def check_portfolio_exits(
     return report.as_dict()
 
 
+@router.get(
+    "/strategies/earnings-drift",
+    summary="The current top earnings surprises, before any trading",
+)
+async def earnings_drift_selection(
+    top_n: int = Query(default=10, ge=1, le=50),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """What the strategy would hold today, and why.
+
+    Separate from the rebalance so the selection can be read without changing
+    a portfolio — the two being one call would mean you could not look before
+    committing.
+    """
+    from app.services.earnings_drift import SETUP_NAME, select_candidates
+
+    candidates = await select_candidates(db, top_n)
+    return {
+        "setup": SETUP_NAME,
+        "evidence": (
+            "earnings_surprise_pct measured t +4.26 over 12 periods at a "
+            "21-day horizon, positive in 11 of them. That is the only "
+            "strategy in this platform that cleared significance — and 12 "
+            "overlapping periods in one regime is suggestive, not settled."
+        ),
+        "positions": [
+            {
+                "ticker": c.ticker,
+                "company_name": c.company_name,
+                "surprise_pct": round(c.surprise_pct, 2),
+                "price": c.price,
+            }
+            for c in candidates
+        ],
+        "unpriced": [c.ticker for c in candidates if c.price is None],
+    }
+
+
+@router.post(
+    "/{portfolio_id}/strategies/earnings-drift/rebalance",
+    summary="Move a paper portfolio to the current top earnings surprises",
+)
+async def earnings_drift_rebalance(
+    portfolio_id: int,
+    top_n: int = Query(default=10, ge=1, le=50),
+    commission: float = Query(
+        default=1.0, ge=0, description="Charged per fill, both ways"
+    ),
+    slippage_bps: float = Query(
+        default=5.0,
+        ge=0,
+        le=200,
+        description="Half-spread crossed on entry and exit, in basis points",
+    ),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Rebalance, charging costs.
+
+    Costs default to something rather than nothing on purpose. A monthly
+    rebalance of ten names is roughly 240 fills a year, and a paper record
+    that fills at the mid with no commission measures a strategy nobody can
+    buy. Set them to your broker's real numbers.
+    """
+    from app.services.earnings_drift import rebalance
+
+    await _get_portfolio_or_404(db, portfolio_id)
+    try:
+        report = await rebalance(db, portfolio_id, top_n, commission, slippage_bps)
+    except (InsufficientFunds, InsufficientShares) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return report.as_dict()
+
+
 @router.post(
     "/{portfolio_id}/simulate",
     response_model=SimulationResponse,
