@@ -185,15 +185,22 @@ Decide deliberately what, if anything, to carry over:
 - **The paper trade log is not re-fetchable either**, and it is the record the
   strategies are eventually judged on. Export `portfolios` and `trades`.
 
-Both are ordinary tables, so a CSV round-trip is enough:
+Both are ordinary tables, so a CSV round-trip is enough. Run this from the
+`backend` directory with the project's own interpreter — it reads the
+configured `DATABASE_URL` rather than guessing where the file is:
 
 ```bash
-# From the local machine, against the SQLite file
-sqlite3 backend/data/app.db -header -csv \
-  "SELECT * FROM intraday_bars;" > intraday_bars.csv
-sqlite3 backend/data/app.db -header -csv \
-  "SELECT * FROM trades;" > trades.csv
+python scripts/export_tables.py --out ../backup
 ```
+
+```powershell
+# Windows
+.\.venv\Scripts\python.exe scripts\export_tables.py --out ..\backup
+```
+
+It uses the standard library rather than the `sqlite3` command-line tool, which
+is absent from a default Windows install — and Windows is where this backend
+actually runs day to day.
 
 Load them into the production database with `\copy` from `psql` after the
 migrations in step 6 have created the tables. Check the `stocks.id` values line
