@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Environment / secrets
+.env
+!.env.example
+
+# Databases & logs
+*.db
+*.sqlite3
+logs/
+
+# Node (frontend, later phases)
+node_modules/
+dist/
+build/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+
+# Frontend/desktop build outputs
+frontend/dist/
+desktop/renderer/
+desktop/release/
+*.tsbuildinfo
+
+# Launcher output, captured so a failed start can be diagnosed.
+backend-startup*.log

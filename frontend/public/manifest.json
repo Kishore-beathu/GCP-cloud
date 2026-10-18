@@ -1,0 +1,10 @@
+{
+  "name": "Pharma Trading Intelligence",
+  "short_name": "TradingIntel",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0b1020",
+  "theme_color": "#0b1020",
+  "description": "Real-time news, sentiment, and price intelligence for pharma and life-sciences equities.",
+  "icons": []
+}

@@ -1,0 +1,16 @@
+{
+  "name": "trading-agent-desktop",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Desktop shell for the Pharma Trading Intelligence dashboard",
+  "main": "main.cjs",
+  "scripts": {
+    "copy-renderer": "node copy-renderer.cjs",
+    "start": "npm run copy-renderer && electron .",
+    "dist": "npm run copy-renderer && electron-builder --win"
+  },
+  "devDependencies": {
+    "electron": "^33.2.0",
+    "electron-builder": "^25.1.8"
+  }
+}

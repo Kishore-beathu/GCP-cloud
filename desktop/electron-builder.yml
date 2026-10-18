@@ -1,0 +1,13 @@
+appId: nl.gxp-consulting.trading-intelligence
+productName: Trading Intelligence
+directories:
+  output: release
+files:
+  - main.cjs
+  - renderer/**
+win:
+  target:
+    - nsis
+nsis:
+  oneClick: true
+  perMachine: false

@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+tests/
+.env
+*.db
+*.sqlite3
+scripts/
+requirements-dev.txt
+requirements-ml.txt
+README.md

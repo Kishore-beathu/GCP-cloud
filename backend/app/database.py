@@ -1,0 +1,194 @@
+"""Async SQLAlchemy engine, session factory, and FastAPI dependency."""
+
+from __future__ import annotations
+
+from collections.abc import AsyncIterator
+
+from sqlalchemy import event
+from sqlalchemy.ext.asyncio import (
+    AsyncEngine,
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
+from sqlalchemy.orm import DeclarativeBase
+
+from app.config import Settings, get_settings
+
+
+class Base(DeclarativeBase):
+    """Declarative base for every ORM model."""
+
+
+_engine: AsyncEngine | None = None
+_session_factory: async_sessionmaker[AsyncSession] | None = None
+
+
+def _statement_cache_size(settings: Settings) -> int | None:
+    """Resolve the asyncpg prepared-statement cache size for this URL.
+
+    Explicit config wins. Otherwise the cache is disabled on Supabase's
+    transaction pooler (port 6543), where connections are shared per
+    transaction and server-side prepared statements leak across clients with
+    "prepared statement ... already exists" errors. The session pooler (5432)
+    and direct connections keep asyncpg's default cache.
+    """
+    if settings.db_statement_cache_size is not None:
+        return settings.db_statement_cache_size
+    if "pooler.supabase.com:6543" in settings.database_url:
+        return 0
+    return None
+
+
+def _engine_kwargs(settings: Settings) -> dict[str, object]:
+    kwargs: dict[str, object] = {"echo": settings.db_echo, "future": True}
+    if not settings.is_sqlite:
+        # Pool tuning is meaningless for SQLite's single-file driver.
+        kwargs.update(pool_size=10, max_overflow=20, pool_pre_ping=True)
+        cache_size = _statement_cache_size(settings)
+        if cache_size is not None:
+            kwargs["connect_args"] = {"statement_cache_size": cache_size}
+    return kwargs
+
+
+def _configure_sqlite(engine: AsyncEngine) -> None:
+    """Put SQLite in WAL mode, so a write does not stall every reader.
+
+    SQLite defaults to journal_mode=delete, where a writer holds an EXCLUSIVE
+    lock for the length of its transaction and readers wait behind it. That is
+    fine for one ingest job and untenable for eight: a news batch committing a
+    few hundred rows blocks the dashboard's queries and the WebSocket
+    handshake, which surfaces as an app that intermittently cannot be reached
+    at all.
+
+    WAL lets readers continue against the last committed snapshot while a write
+    is in flight. synchronous=NORMAL is the conventional companion — it trades
+    a durability guarantee that matters on power loss for far fewer fsyncs, on
+    a database whose contents are re-fetchable from the vendors. The busy
+    timeout covers writer-versus-writer contention, which WAL does not remove.
+    """
+
+    @event.listens_for(engine.sync_engine, "connect")
+    def _set_pragmas(dbapi_connection, _record):  # pragma: no cover - driver hook
+        cursor = dbapi_connection.cursor()
+        try:
+            cursor.execute("PRAGMA journal_mode=WAL")
+            cursor.execute("PRAGMA synchronous=NORMAL")
+            cursor.execute("PRAGMA busy_timeout=15000")
+            # Off by default in SQLite, which silently ignores every ON DELETE
+            # clause in the schema. Deleting an article left its sentiment
+            # score behind, and left any syndicated copy pointing at a row
+            # that no longer existed — permanently excluded from scoring as a
+            # duplicate of nothing. Postgres enforces these already, so
+            # without this the two backends disagree about what a delete does.
+            cursor.execute("PRAGMA foreign_keys=ON")
+        finally:
+            cursor.close()
+
+
+def _build_engine(settings: Settings) -> AsyncEngine:
+    engine = create_async_engine(settings.database_url, **_engine_kwargs(settings))
+    if settings.is_sqlite:
+        _configure_sqlite(engine)
+    return engine
+
+
+def get_engine() -> AsyncEngine:
+    """Return the lazily created global engine."""
+    global _engine
+    if _engine is None:
+        _engine = _build_engine(get_settings())
+    return _engine
+
+
+def get_session_factory() -> async_sessionmaker[AsyncSession]:
+    """Return the lazily created global session factory."""
+    global _session_factory
+    if _session_factory is None:
+        _session_factory = async_sessionmaker(
+            bind=get_engine(), class_=AsyncSession, expire_on_commit=False
+        )
+    return _session_factory
+
+
+async def get_db() -> AsyncIterator[AsyncSession]:
+    """FastAPI dependency yielding a session that rolls back on error."""
+    async with get_session_factory()() as session:
+        try:
+            yield session
+        except Exception:
+            await session.rollback()
+            raise
+
+
+async def create_all() -> None:
+    """Create any missing tables. Real migrations belong in Alembic later."""
+    from app import models  # noqa: F401  (import registers the mappers)
+
+    async with get_engine().begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    await enable_row_level_security()
+
+
+async def enable_row_level_security() -> None:
+    """Enable RLS on every table (PostgreSQL only).
+
+    Managed platforms like Supabase expose the ``public`` schema through an
+    auto-generated REST API keyed by a publishable token. With RLS off, that
+    token could read and write these tables. Enabling RLS with no policies
+    denies that path entirely, while this app is unaffected: it connects as
+    the table owner over a direct Postgres connection, and owners bypass RLS
+    unless FORCE is set.
+    """
+    from sqlalchemy import text
+
+    if get_settings().is_sqlite:
+        return  # SQLite has no RLS and no exposed REST surface.
+
+    async with get_engine().begin() as conn:
+        for table in Base.metadata.sorted_tables:
+            await conn.execute(
+                text(f'ALTER TABLE "{table.name}" ENABLE ROW LEVEL SECURITY')
+            )
+
+
+async def dispose_engine() -> None:
+    """Close pooled connections and reset the globals (used on shutdown/tests)."""
+    global _engine, _session_factory
+    if _engine is not None:
+        await _engine.dispose()
+    _engine = None
+    _session_factory = None
+
+
+async def missing_columns(engine: AsyncEngine | None = None) -> dict[str, list[str]]:
+    """Columns the models declare that the live database does not have.
+
+    ``create_all`` creates missing tables and never alters existing ones, so a
+    database made before a column was added keeps working right up until the
+    first query mentions that column — at which point every endpoint touching
+    the table returns 500 and the reason is only in the server log.
+
+    Checking at startup turns that into one clear line naming the remedy.
+    """
+    from sqlalchemy import inspect
+
+    engine = engine or get_engine()
+    missing: dict[str, list[str]] = {}
+
+    def _inspect(connection) -> dict[str, list[str]]:
+        inspector = inspect(connection)
+        existing_tables = set(inspector.get_table_names())
+        found: dict[str, list[str]] = {}
+        for table in Base.metadata.sorted_tables:
+            if table.name not in existing_tables:
+                continue
+            live = {column["name"] for column in inspector.get_columns(table.name)}
+            absent = [column.name for column in table.columns if column.name not in live]
+            if absent:
+                found[table.name] = absent
+        return found
+
+    async with engine.connect() as connection:
+        missing = await connection.run_sync(_inspect)
+    return missing
