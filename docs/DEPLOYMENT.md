@@ -98,7 +98,7 @@ gcloud builds submit --config backend/cloudbuild.yaml \
 gcloud run services update trading-api \
   --region=$REGION \
   --set-secrets=DATABASE_URL=database-url:latest,AUTH_PASSWORD=auth-password:latest,SECRET_KEY=secret-key:latest,FINNHUB_API_KEY=finnhub-api-key:latest,ALPHA_VANTAGE_API_KEY=alpha-vantage-api-key:latest,SLACK_WEBHOOK_URL=slack-webhook-url:latest \
-  --set-env-vars=ENVIRONMENT=production,CREATE_TABLES_ON_STARTUP=false,SEC_USER_AGENT="Your Company you@example.com",CORS_ORIGINS=https://your-dashboard.example.com \
+  --set-env-vars=ENVIRONMENT=production,CREATE_TABLES_ON_STARTUP=false,SEC_USER_AGENT="Your Company you@example.com",CORS_ORIGINS=https://your-dashboard.example.com,INTRADAY_RECORD_ENABLED=true,INTRADAY_RECORD_INTERVAL_MINUTES=15,INTRADAY_RECORD_LIMIT=150,PAPER_EXITS_ENABLED=true,PAPER_EXITS_INTERVAL_MINUTES=5 \
   --min-instances=1 \
   --max-instances=1 \
   --cpu=1 --memory=1Gi \
@@ -110,6 +110,33 @@ Cloud SQL.
 
 Subsequent deploys are just the `builds submit` line — the service keeps its
 secrets and env vars.
+
+### Why intraday recording belongs here and not on a laptop
+
+`INTRADAY_RECORD_ENABLED` is off by default, and leaving it off in production
+defeats most of the reason to deploy at all.
+
+The intraday setups in `app/services/setups.py` cannot be validated against
+`stock_prices`, which holds one row per trading day. They need a record of what
+a five-minute chart looked like at the moment a setup fired, and that record
+only exists if something was running when it fired. Yahoo's intraday endpoint
+returns the current session and nothing earlier, so a session nobody recorded
+is gone permanently — there is no backfill.
+
+Run locally, this reliably loses weeks. One real example: recording ran from
+2 to 10 September, the laptop was closed, and the next five and a half weeks
+produced nothing. The data is not recoverable.
+
+At 150 symbols every 15 minutes the vendor sees about 0.17 requests a second,
+which is an order of magnitude below the rate that gets a client throttled.
+Accumulating a measurable sample — several hundred setup triggers — takes
+roughly a month of **continuous** sessions. That is the whole argument for an
+always-on instance rather than a scheduled job.
+
+`PAPER_EXITS_ENABLED` is the same argument applied to the paper log. A stop
+breached while nobody is watching leaves the position open, so the log records
+a loss the plan said to cut. A record where winners are closed at target and
+losers run until someone notices measures attentiveness, not the strategy.
 
 ### Why `min-instances=1` and `max-instances=1`
 
@@ -139,6 +166,39 @@ burn your market-data quota — or get your IP blocked by the SEC. If a deploy
 fails with *"Refusing to start in production with an insecure configuration"*,
 that check is doing its job; add the secrets rather than lowering
 `ENVIRONMENT`.
+
+## 5b. Moving an existing local database
+
+Local development runs on SQLite with `CREATE_TABLES_ON_STARTUP=true`;
+production runs on PostgreSQL with migrations. The two do not share a file, so
+a local database does not come across by deploying.
+
+Decide deliberately what, if anything, to carry over:
+
+- **The universe** seeds itself. `app/services/tickers.py` is the source of
+  truth and the symbols are recreated on first run; nothing to migrate.
+- **Price history** is re-fetchable. `POST /admin/ingest/yahoo?only_missing=true&range=1y`
+  rebuilds it in one pass, and the vendor's history is the same history.
+- **Intraday bars are not re-fetchable.** Yahoo serves the current session
+  only, so anything already recorded locally is the only copy that will ever
+  exist. If those weeks matter, export `intraday_bars` before switching.
+- **The paper trade log is not re-fetchable either**, and it is the record the
+  strategies are eventually judged on. Export `portfolios` and `trades`.
+
+Both are ordinary tables, so a CSV round-trip is enough:
+
+```bash
+# From the local machine, against the SQLite file
+sqlite3 backend/data/app.db -header -csv \
+  "SELECT * FROM intraday_bars;" > intraday_bars.csv
+sqlite3 backend/data/app.db -header -csv \
+  "SELECT * FROM trades;" > trades.csv
+```
+
+Load them into the production database with `\copy` from `psql` after the
+migrations in step 6 have created the tables. Check the `stocks.id` values line
+up first — both tables reference stocks by id, and a re-seeded universe may
+number them differently.
 
 ## 6. Apply database migrations
 
